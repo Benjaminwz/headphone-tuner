@@ -5,7 +5,7 @@
 
 ## 特色
 
-- **任何耳機**：輸入型號搜尋，自動從 [AutoEQ](https://github.com/jaakkopasanen/AutoEq) 下載校正（6000 多款，最多 3 份不同單位的量測，可選平均）
+- **任何耳機**：輸入型號搜尋，自動從 [AutoEQ](https://github.com/jaakkopasanen/AutoEq) 下載校正（6000 多款，最多 3 份不同單位的量測，可選平均）；資料庫沒量過的型號（例：Sony MDR-XB400）用同系列兄弟機推估
 - **風格都有根據，不靠感覺**：Harman 聆聽研究、ISO 226 等響曲線、ANSI S3.5 語音清晰度、bs2b 交叉饋送、Beranek 音樂廳殘響、
   旗艦／熱門耳機的量測反推（HD 800 S、Susvara、大奧、AirPods Max、Sony XM5…）
 - **音量固定**：自動預留音量空間，切換風格、開關 EQ 音量都一樣，比較音質才公平，也不會破音

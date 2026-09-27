@@ -5,6 +5,7 @@
 import cmath
 import ctypes
 import ctypes.wintypes
+import itertools
 import json
 import math
 import os
@@ -84,20 +85,33 @@ NUM = "Segoe UI"
 # 耳機校正：使用者選好耳機後，從 AutoEQ 下載最多 3 份不同來源的量測（目標 Harman），由 set_headphone() 填入
 BASES = {"none": ("不校正（耳機原味）", [])}
 SOURCE_ORDER = ["oratory1990", "crinacle", "Rtings", "Innerfidelity", "Super Review", "Headphone.com Legacy"]
+# AutoEQ 沒有量測、但有同系列兄弟機的型號：名稱 → 用來推估的型號
+ESTIMATED = {
+    "Sony MDR-XB400（同系列 XB300／XB500 推估）": ["Sony MDR-XB300", "Sony MDR-XB500"],  # 2010 年 Extra Bass 耳罩系列
+}
 
 
 def set_headphone(hp):
     """依耳機資料重建 BASES：第一份來源＝推薦、其餘各一個、兩份以上再加「多份平均」"""
+    global _ESTIMATE
     srcs = (hp or {}).get("sources") or []
+    _ESTIMATE = (hp or {}).get("name") in ESTIMATED  # 推估的型號：各份都是兄弟機的量測，平均才最接近，所以推薦平均
     BASES.clear()
     for key, (label, fl) in zip(("autoeq", "src2", "src3"), srcs):
-        BASES[key] = (f"{label}（推薦）" if key == "autoeq" else f"{label} 量測", [tuple(f) for f in fl])
+        rec = key == "autoeq" and not _ESTIMATE
+        BASES[key] = (f"{label}（推薦）" if rec else f"{label} 量測", [tuple(f) for f in fl])
     if len(srcs) >= 2:  # 每個濾波器增益 ÷ 份數疊起來 ≈ 各條校正曲線（dB）的平均，比較不會被單一量測設備帶偏
-        BASES["avg"] = ("多份平均（最不偏）", [(t, f, g / len(srcs), q) for _l, fl in srcs for t, f, g, q in fl])
+        BASES["avg"] = ("多份平均（推薦）" if _ESTIMATE else "多份平均（最不偏）",
+                        [(t, f, g / len(srcs), q) for _l, fl in srcs for t, f, g, q in fl])
     BASES["none"] = ("不校正（耳機原味）", [])
 
 
+_ESTIMATE = False
+
+
 def default_base():
+    if _ESTIMATE and "avg" in BASES:
+        return "avg"
     return "autoeq" if "autoeq" in BASES else "none"
 
 
@@ -987,6 +1001,12 @@ def load_headphone_index():
     for m in re.finditer(r"^- \[(.+)\]\((\./.+)\) by (.+)$", text, re.M):
         name, link, by = m.groups()
         models.setdefault(name, []).append((by.split(" on ")[0].strip(), link[2:]))
+    # 資料庫沒量過的型號：用同系列、同年代的兄弟機量測推估（兩支交錯取，「多份平均」＝兩支的平均）
+    for alias, sibs in ESTIMATED.items():
+        lists = [[(f"{src}（{sib.split('-')[-1]}）", link) for src, link in models.get(sib, [])] for sib in sibs]
+        ent = [e for group in itertools.zip_longest(*lists) for e in group if e]
+        if ent:
+            models[alias] = ent
     return models, None
 
 
