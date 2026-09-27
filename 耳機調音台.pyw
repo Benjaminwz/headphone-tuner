@@ -24,6 +24,8 @@ from tkinter import messagebox, simpledialog, ttk
 
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
 SETTINGS_FILE = os.path.join(APP_DIR, "settings.json")
+ICON_PATH = os.path.join(APP_DIR, "tuner.ico")
+APP_ID = "HeadphoneTuner.Panel"  # 工作列用自己的圖示（不跟 Python 混在一起）
 OUT_NAME = "tuner_current.txt"
 HP_DIR = os.path.join(APP_DIR, "耳機資料")  # 耳機清單、下載的校正檔快取
 AUTOEQ_RAW = "https://raw.githubusercontent.com/jaakkopasanen/AutoEq/master/results/"
@@ -419,6 +421,30 @@ def default_device_guid():
 
 def find_device(guid):
     return next((d for d in list_devices() if d["guid"].lower() == (guid or "").lower()), None)
+
+
+def remove_config(cfg_dir):
+    """解除安裝用：拿掉 config.txt 裡調音台的區塊（原本的設定恢復成套用全部裝置），刪掉調音台的設定檔。
+    沒有調音台的區塊就什麼都不動。回傳 True＝有改動"""
+    path = os.path.join(cfg_dir, "config.txt")
+    try:
+        text = read_text(path).replace("\r\n", "\n")
+    except OSError:
+        return False
+    if BLOCK_BEGIN not in text or BLOCK_END not in text:
+        return False
+    rest = text[text.index(BLOCK_END) + len(BLOCK_END):].lstrip("\n")
+    lines = rest.split("\n")
+    if lines and lines[0].startswith("# 原本的設定（調音台讓它只套用在其他裝置）"):
+        lines = lines[2:] if len(lines) > 1 and lines[1].lower().startswith("device:") else lines[1:]
+    new_text = text[:text.index(BLOCK_BEGIN)] + "\n".join(lines)
+    with open(path, "w", encoding="utf-8", newline="\r\n") as fh:
+        fh.write(new_text)
+    try:
+        os.remove(os.path.join(cfg_dir, OUT_NAME))
+    except OSError:
+        pass
+    return True
 
 
 def read_text(path):
@@ -936,6 +962,8 @@ def make_shortcut(folder=None):
     lnk.TargetPath = pyw if os.path.exists(pyw) else sys.executable
     lnk.Arguments = f'"{os.path.abspath(__file__)}"'
     lnk.WorkingDirectory = APP_DIR
+    if os.path.exists(ICON_PATH):
+        lnk.IconLocation = ICON_PATH
     lnk.Save()
     return path
 
@@ -2000,6 +2028,17 @@ class App:
 
 CONFIG_DIR = None
 if __name__ == "__main__":
+    if "--uninstall" in sys.argv:  # 解除安裝程式呼叫：把 Equalizer APO 的設定恢復原狀
+        try:
+            remove_config(sys.argv[sys.argv.index("--uninstall") + 1] if len(sys.argv) > sys.argv.index("--uninstall") + 1
+                          else apo_config_dir())
+        except OSError as e:
+            print("還原 Equalizer APO 設定失敗：", e)
+        sys.exit(0)
+    try:
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(APP_ID)
+    except (AttributeError, OSError):
+        pass
     if "--make-shortcut" in sys.argv:  # 安裝.bat 用：建桌面捷徑，再用沒有黑視窗的方式打開調音台
         import subprocess
         try:
@@ -2024,6 +2063,8 @@ if __name__ == "__main__":
     for _k in [k for k in PLAIN if k not in {n for n, *_r in STYLES}]:  # 沒用到的介紹不留（說明框高度依最長的算）
         del PLAIN[_k]
     root = tk.Tk()
+    if os.path.exists(ICON_PATH):
+        root.iconbitmap(default=ICON_PATH)  # 視窗左上角、工作列、對話框都用調音台圖示
     App(root)
     root.resizable(False, False)
     root.mainloop()

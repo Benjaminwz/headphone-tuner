@@ -15,6 +15,9 @@
 
 安裝步驟
 --------
+（更簡單的方法：到 github.com/Benjaminwz/headphone-tuner 的 Releases 下載安裝精靈 HeadphoneTuner-Setup，
+  一直按下一步就好，不用先裝 Python。下面是免安裝版的步驟。）
+
 1. 雙擊「安裝.bat」
    ・會自動安裝需要的套件
    ・如果還沒裝 Equalizer APO，會幫你打開下載頁面：
@@ -51,7 +54,8 @@
 
 移除／還原
 ----------
-調音台第一次設定時，會把 Equalizer APO 原本的設定備份成
+用安裝精靈裝的：到 Windows「設定 → 應用程式」解除安裝「耳機調音台」，會自動把 Equalizer APO 的設定恢復原狀。
+免安裝版：調音台第一次設定時，會把 Equalizer APO 原本的設定備份成
   C:\Program Files\EqualizerAPO\config\config_調音台之前的備份.txt
 想還原就把它改名成 config.txt 蓋回去。不想用 Equalizer APO 了，到 Windows「新增或移除程式」移除即可。
 

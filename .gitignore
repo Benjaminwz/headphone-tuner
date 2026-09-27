@@ -2,3 +2,6 @@ settings.json
 耳機資料/
 __pycache__/
 *.zip
+installer/build/
+installer/uv/
+installer/dist/

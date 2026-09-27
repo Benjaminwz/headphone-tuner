@@ -16,12 +16,16 @@
 
 ## 安裝
 
-需要 Windows 10／11、[Python](https://www.python.org/downloads/)（安裝時勾選 Add python.exe to PATH）、
-[Equalizer APO](https://sourceforge.net/projects/equalizerapo/)（免費的等化器核心）。
+需要 Windows 10／11 和 [Equalizer APO](https://sourceforge.net/projects/equalizerapo/)（免費的等化器核心，
+安裝時勾選你的耳機用的輸出裝置，裝完重新開機）。
 
-1. 到 [Releases](../../releases) 下載 zip，解壓縮
-2. 雙擊 **安裝.bat**：自動裝好需要的套件、在桌面建立捷徑並打開調音台
-3. 第一次打開會請你選耳機：輸入型號，點兩下就好
+**安裝精靈（推薦）**：到 [Releases](../../releases) 下載 `HeadphoneTuner-Setup-版本.exe`，一直按下一步。
+不用先裝 Python（會自動下載調音台專用的一份，不影響電腦裡其他程式），也不用系統管理員權限。
+解除安裝時會把 Equalizer APO 的設定恢復原狀。
+
+**免安裝版**：下載 `headphone-tuner-版本.zip`，解壓縮後雙擊「安裝.bat」（需要先裝 [Python](https://www.python.org/downloads/)）。
+
+第一次打開會請你選耳機：輸入型號，點兩下就好。
 
 詳細說明、移除方法請看 [說明.txt](說明.txt)。
 
