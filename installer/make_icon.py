@@ -1,4 +1,4 @@
-"""畫耳機調音台的圖示（寶藍圓角方塊＋白色耳機＋三條等化器）：輸出 tuner.ico（程式、捷徑用）和 tuner.png（安裝精靈用）。
+"""畫耳機調音台的圖示（暖橘圓角方塊＋白色耳機＋三條等化器）：輸出 tuner.ico（程式、捷徑用）和 tuner.png（安裝精靈用）。
 只需要 numpy。用法：python installer/make_icon.py"""
 import os
 import struct
@@ -8,7 +8,7 @@ import numpy as np
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
-TOP, BOTTOM = np.array([0x3B, 0x74, 0xE6]), np.array([0x1E, 0x4F, 0xC4])  # 跟調音台介面一樣的寶藍
+TOP, BOTTOM = np.array([0xF2, 0x8C, 0x4C]), np.array([0xCF, 0x5A, 0x1E])  # 跟調音台介面一樣的陶土橘（上亮下深）
 
 
 def render(size, ss=8):

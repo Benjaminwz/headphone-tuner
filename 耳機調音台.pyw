@@ -20,7 +20,7 @@ import urllib.request
 import uuid
 import winreg
 from datetime import datetime
-from tkinter import messagebox, simpledialog, ttk
+from tkinter import filedialog, messagebox, simpledialog, ttk
 
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
 SETTINGS_FILE = os.path.join(APP_DIR, "settings.json")
@@ -40,14 +40,43 @@ NAME_KEY = "{b3f8fa53-0004-438e-9003-51a46e139bfc},6"  # 介面名稱（例：TO
 DESC_KEY = "{a45c254e-df1c-4efd-8020-67d146a850e0},2"  # 裝置種類（例：喇叭、耳機）
 FORMAT_KEY = "{f19f064d-082c-4e27-bc73-6882a1bb8e4c},0"
 
-# 配色：淺色系，白卡片＋深藍字＋寶藍色重點（跟藍色大肥魚同一套）
-BG, HEADER, PANEL, LINE = "#EEF3FB", "#FFFFFF", "#FFFFFF", "#DCE5F3"
-PILL, PILL_HOVER, TRACK = "#EEF3FB", "#E1EAF8", "#DCE5F3"
-TEXT, SUB, VALUE = "#0F2A5C", "#6B7A99", "#1E5BD8"
-ACCENT, ACCENT_HI, FILL = "#1E5BD8", "#3B74E6", "#E6EEFD"
-GREEN, GREEN_BG, ORANGE, ORANGE_BG = "#1C8C5E", "#E3F5EC", "#C8671A", "#FDF0E3"
-GOLD, GOLD_BG, CD_FG, CD_BG = "#A16207", "#FEF3C7", "#1E5BD8", "#E6EEFD"
-GRID_MINOR, ZERO_LINE, KNOB_EDGE = "#F1F5FB", "#B8C7E3", "#C9D5EA"
+# 配色：暖色系，奶油白底＋白卡片＋深咖啡字＋陶土橘重點
+BG, HEADER, PANEL, LINE = "#FBF5EE", "#FFFCF8", "#FFFFFF", "#EFE2D3"
+PILL, PILL_HOVER, TRACK = "#F8EEE3", "#F1E1CF", "#EFE2D3"
+TEXT, SUB, VALUE = "#3B2A1E", "#8C7461", "#C0561B"
+ACCENT, ACCENT_HI, FILL = "#D9692B", "#E8823F", "#FCE8D8"
+GREEN, GREEN_BG, ORANGE, ORANGE_BG = "#4E8A3E", "#EAF3E2", "#B8452B", "#FBE5DE"  # ORANGE＝警告（磚紅）
+GOLD, GOLD_BG, CD_FG, CD_BG = "#9A6708", "#FDF0C8", "#C0561B", "#FCE8D8"
+GRID_MINOR, ZERO_LINE, KNOB_EDGE = "#F6EEE5", "#E0C9B2", "#E4CFBA"
+TWEAK, TIP_BG = "#8A5A36", "#3B2A1E"  # 曲線圖裡「你的細調」（咖啡色虛線）、說明小視窗底色
+# 名詞說明：畫面上這些名稱，滑鼠移上去會跳出白話解釋
+HELP = {
+    "開啟 EQ": "關掉就是原音，音量不會變，方便比較差別。空白鍵也可以開關。",
+    "直通模式": "完全不處理聲音、也不預留音量，最接近「獨佔模式」。打開時聲音會突然變大，要先把音量轉小。",
+    "耳機校正（AutoEQ 量測，目標 Harman 2018）": "依專業量測，把你的耳機調到研究上最多人喜歡的平衡（Harman 目標）。"
+                                            "不同單位量的結果略有差異，「多份平均」最不偏。",
+    "低頻": "105 Hz 以下：大鼓、貝斯的量感。",
+    "厚度": "250 Hz 附近：聲音飽不飽滿，太多會悶。",
+    "人聲": "1.5 kHz 附近：人聲、樂器的主體。",
+    "臨場感": "3.5 kHz 附近：清晰、貼近耳邊的感覺，太多會刺耳。",
+    "高頻": "10 kHz 以上：亮度、空氣感，太多會嘶嘶的。",
+    "聲場寬度": "把左右的差異放大，樂器分得更開、舞台更寬。開太大會有點不自然。",
+    "交叉饋送": "喇叭的聲音兩耳都聽得到，耳機卻是左右完全分開。交叉饋送讓一點低頻滲到另一耳，"
+               "聲音從腦袋中間移到前方，長時間聽比較不累。",
+    "左右平衡": "左右耳聽力不同、或耳機左右不一樣大聲時用。可以用下面的測試音檢查。",
+    "殘響空間": "加上房間的回音：錄音室（小、乾淨）或音樂廳（大、有殿堂感）。",
+    "平衡測試音": "播放很小聲的粉紅噪音：按「中央」時聲音應該在正中間。",
+    "位元深度": "每個取樣的精細度。24-bit 就很夠了。",
+    "取樣率（kHz）": "每秒取樣次數。CD 音源選 44.1 的倍數最單純；調更高沒有明顯差別。",
+}
+GUIDE = [
+    ("選耳機", "按上方「耳機：」，輸入型號（例：HD 600、XM5），點兩下。"),
+    ("確認有接上", "右上角要顯示「EQ 已接上」。沒有的話按「點我接上」，勾選你的裝置後重新開機。"),
+    ("挑風格", "在「快速風格」點一個，滑鼠移上去會有介紹。也可以在搜尋框打字找（例：搖滾、人聲、低音）。"),
+    ("比較差別", "按住上方「按住聽原音」聽原本的聲音，放開就回來；空白鍵也能開關（音量不變）。"),
+    ("微調", "拉中間的滑桿；調壞了按「↶ 上一步」或 Ctrl+Z。名稱看不懂？滑鼠移上去就有說明。"),
+    ("存起來", "喜歡就按「儲存」；也能「匯出給手機」，在手機的等化器 App 用同一組聲音。"),
+]
 # 字體：實際用哪個在 pick_fonts() 依電腦上有的決定（中文 Noto Sans TC、數字 Inter）
 FONT = FONT_MED = "Microsoft JhengHei UI"
 NUM = "Segoe UI"
@@ -260,7 +289,7 @@ PLAIN = {
     "Beats Studio Pro": "中低頻乾淨、高音亮、節奏清楚。適合流行、嘻哈",
 }
 # 「你的歌單」分頁在啟動時依這台電腦的 Tidal 收藏產生（analyze_tidal），有才會出現
-STYLE_GROUPS = [("研究依據", RESEARCH), ("曲風", GENRE), ("搖滾", ROCK), ("殿堂聲場", STAGE), ("旗艦耳機", LEGEND), ("大眾熱門", POPULAR)]
+STYLE_GROUPS = [("推薦", RESEARCH), ("曲風", GENRE), ("搖滾", ROCK), ("空間感", STAGE), ("旗艦耳機", LEGEND), ("熱門耳機", POPULAR)]
 STYLES = [s for _name, group in STYLE_GROUPS for s in group]
 FREQS = [20 * 1000 ** (i / 199) for i in range(200)]
 AUTO = "自動 "  # 自動存檔的預設名稱開頭
@@ -407,6 +436,14 @@ def list_devices():
             out.append({"guid": guid, "name": f"{desc} ({iface})" if desc else iface, "iface": iface, "desc": desc,
                         "active": active, "hooked": hooked, "fmt": fmt})
     return out
+
+
+def work_area():
+    """螢幕扣掉工作列的大小（實際像素）"""
+    r = ctypes.wintypes.RECT()
+    if ctypes.windll.user32.SystemParametersInfoW(48, 0, ctypes.byref(r), 0):  # SPI_GETWORKAREA
+        return r.right - r.left, r.bottom - r.top
+    return None
 
 
 def default_device_guid():
@@ -799,6 +836,31 @@ def tidal_normalization():
 
 
 def analyze_tidal():
+    """有快取就用（Tidal 的快取檔沒變 → 結果一樣），開啟更快"""
+    folder = os.path.join(os.environ.get("APPDATA", ""), "TIDAL", "Cache", "Cache_Data")
+    try:
+        files = [e for e in os.scandir(folder) if e.name.startswith("f_")]
+        stamp = [len(files), max((e.stat().st_mtime for e in files), default=0)]
+    except OSError:
+        return [], {}
+    path = os.path.join(APP_DIR, "歌單分析.json")
+    try:
+        with open(path, encoding="utf-8") as fh:
+            c = json.load(fh)
+        if c.get("v") == 1 and c.get("stamp") == stamp:
+            return [tuple(m) for m in c["mine"]], c["plain"]
+    except (OSError, ValueError, KeyError):
+        pass
+    mine, plain = _analyze_tidal()
+    try:
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump({"v": 1, "stamp": stamp, "mine": mine, "plain": plain}, fh, ensure_ascii=False)
+    except OSError:
+        pass
+    return mine, plain
+
+
+def _analyze_tidal():
     """依這台電腦的 Tidal 收藏產生「你的歌單」：響度、峰值、音質特別極端的歌各給一個設定。
     回傳 (風格清單, 白話介紹)；沒有 Tidal 或歌太少就回傳空的"""
     import collections
@@ -978,7 +1040,7 @@ def load_settings():
 
 # ---------------------------------------------------------------- 自製元件
 class Pill(tk.Label):
-    """扁平按鈕：滑過變亮；選中或主要按鈕是藍底白字"""
+    """扁平按鈕：滑過變亮；選中或主要按鈕是橘底白字"""
 
     def __init__(self, master, app, text, command, primary=False, size=10, font=None):
         super().__init__(master, text=text, font=(font or FONT, size), cursor="hand2",
@@ -1004,7 +1066,7 @@ class Pill(tk.Label):
 
 
 class Slider(tk.Canvas):
-    """滑桿：圓角軌道、從 0 往外填藍色、白色圓把手；可拖曳、點擊、滾輪，雙擊歸零"""
+    """滑桿：圓角軌道、從 0 往外填橘色、白色圓把手；可拖曳、點擊、滾輪，雙擊歸零"""
 
     def __init__(self, master, app, var, lo, hi, step, length, on_change):
         super().__init__(master, width=app.px(length), height=app.px(26), bg=master["bg"],
@@ -1016,7 +1078,8 @@ class Slider(tk.Canvas):
         self.bind("<MouseWheel>", lambda e: self.set(self.var.get() + (step if e.delta > 0 else -step)))
         self.bind("<Double-Button-1>", lambda _e: self.set(min(max(0, lo), hi)))
         self.bind("<Configure>", lambda _e: self.draw())
-        var.trace_add("write", lambda *_: self.draw())
+        tid = var.trace_add("write", lambda *_: self.draw())
+        self.bind("<Destroy>", lambda _e: var.trace_remove("write", tid))
 
     def set(self, v):
         v = min(self.hi, max(self.lo, round(v / self.step) * self.step))
@@ -1049,7 +1112,7 @@ class Slider(tk.Canvas):
 
 
 class Toggle(tk.Canvas):
-    """開關：藍色＝開"""
+    """開關：橘色＝開"""
 
     def __init__(self, master, app, var, command):
         self.w, self.h = app.px(42), app.px(24)
@@ -1057,7 +1120,8 @@ class Toggle(tk.Canvas):
                          cursor="hand2")
         self.app, self.var, self.command = app, var, command
         self.bind("<Button-1>", self.click)
-        var.trace_add("write", lambda *_: self.draw())
+        tid = var.trace_add("write", lambda *_: self.draw())
+        self.bind("<Destroy>", lambda _e: var.trace_remove("write", tid))
         self.draw()
 
     def click(self, _e):
@@ -1101,6 +1165,9 @@ class App:
         self.cur_fmt = self.pend_fmt = None  # DAC 目前的格式／準備要套用的格式 (位元, 取樣率)
         self._job = self._auto_job = self._toast = None
         self.group = 0  # 快速風格目前顯示哪個分頁
+        self.hist, self.fut, self._last_snap = [], [], None  # 上一步／下一步
+        self._base_curves = {}  # 耳機校正的曲線快取（拖滑桿時不用每次重算）
+        self._tip = self._tip_job = None
         root.protocol("WM_DELETE_WINDOW", self.on_close)
         pick_fonts(root)
         self.style_theme()
@@ -1108,6 +1175,7 @@ class App:
         root.update_idletasks()
         self.fit_style_grid()
         self.fit_source_box()
+        self.fit_screen()
         self.changed()
         self.tick()
         start_hotkeys(root, {1: self.hotkey_toggle_eq, 2: lambda: self.hotkey_style(1),
@@ -1115,15 +1183,19 @@ class App:
         # 版面排好後把視窗大小固定住：之後文字變長變短都不會讓視窗跳動
         root.update_idletasks()
         w, h = root.winfo_reqwidth(), root.winfo_reqheight()
-        x = max(0, (root.winfo_screenwidth() - w) // 2)  # 開在螢幕正中間，下面才不會跑出螢幕
-        y = max(0, (root.winfo_screenheight() - h) // 2 - self.px(24))
+        aw, ah = work_area() or (root.winfo_screenwidth(), root.winfo_screenheight())
+        x = max(0, (aw - w) // 2)  # 開在工作區正中間（不含工作列），下面才不會跑出螢幕
+        y = max(0, (ah - h) // 2)
         root.geometry(f"{w}x{h}+{x}+{y}")
         # 視窗內快捷鍵：空白鍵開關 EQ、←→ 換風格、數字鍵換分頁
-        root.bind("<space>", lambda _e: self.hotkey_toggle_eq())
-        root.bind("<Right>", lambda _e: self.hotkey_style(1))
-        root.bind("<Left>", lambda _e: self.hotkey_style(-1))
+        key = lambda fn: (lambda _e: None if self.typing() else fn())  # 在搜尋框打字時不觸發
+        root.bind("<space>", key(self.hotkey_toggle_eq))
+        root.bind("<Right>", key(lambda: self.hotkey_style(1)))
+        root.bind("<Left>", key(lambda: self.hotkey_style(-1)))
+        root.bind("<Control-z>", key(self.undo))
+        root.bind("<Control-y>", key(self.redo))
         for k in range(len(STYLE_GROUPS)):
-            root.bind(str(k + 1), lambda _e, g=k: self.show_group(g))
+            root.bind(str(k + 1), key(lambda g=k: self.show_group(g)))
         root.focus_set()
         root.after(400, self.first_run)
 
@@ -1226,6 +1298,11 @@ class App:
         self.dev_chip = tk.Label(head, font=(FONT, 10, "bold"), padx=px(12), pady=px(4))
         self.dev_chip.pack(side="right", padx=px(18))
         self.fix_btn = Pill(head, self, "點我接上", self.open_selector, primary=True)
+        Pill(head, self, "？ 怎麼用", self.show_guide, size=9).pack(side="right", padx=(0, px(8)))
+        self.ab_btn = Pill(head, self, "按住聽原音", lambda: None, size=9)
+        self.ab_btn.pack(side="right", padx=(0, px(8)))
+        self.ab_btn.bind("<ButtonPress-1>", lambda _e: self.hold_original(True), add="+")
+        self.ab_btn.bind("<ButtonRelease-1>", lambda _e: self.hold_original(False), add="+")
 
         # 播放資訊列
         bar = tk.Frame(r, bg=BG)
@@ -1254,7 +1331,16 @@ class App:
         grid.columnconfigure((0, 1), weight=1, uniform="b")
 
         # 左：快速風格
-        c = self.card(left, "快速風格", "滑過看介紹　←→ 換風格　空白鍵 A/B")
+        c = self.card(left, "快速風格")
+        top = c.winfo_children()[0]
+        self.search_var = tk.StringVar()
+        ent = tk.Entry(top, textvariable=self.search_var, font=(FONT, 10), relief="flat", bg=PILL, fg=TEXT,
+                       insertbackground=TEXT, width=14, highlightthickness=1, highlightbackground=LINE,
+                       highlightcolor=ACCENT)
+        ent.pack(side="right", ipady=px(2))
+        ent.bind("<Escape>", lambda _e: (self.search_var.set(""), self.root.focus_set()))
+        self.label(top, "搜尋", 9, SUB).pack(side="right", padx=(0, px(6)))
+        self.search_var.trace_add("write", lambda *_: self.search_styles())
         tabs = tk.Frame(c, bg=PANEL)
         tabs.pack(fill="x")
         self.tabs = []
@@ -1282,7 +1368,7 @@ class App:
         self.show_group(0)
 
         # 中：曲線
-        c = self.card(mid, "EQ 曲線", "藍＝整體效果　橘虛線＝你的細調")
+        c = self.card(mid, "EQ 曲線", "橘線＝整體效果　咖啡色虛線＝你的細調")
         self.cw, self.ch = px(500), px(190)
         self.canvas = tk.Canvas(c, width=self.cw, height=self.ch, bg=PANEL, highlightthickness=0)
         self.canvas.pack(fill="x")
@@ -1298,6 +1384,12 @@ class App:
         row.pack(fill="x", pady=(px(8), 0))
         Pill(row, self, "↺ 恢復預設（推薦校正、全部歸零）", self.reset_default).pack(side="right")
         Pill(row, self, "細調歸零", lambda: self.set_bands([0] * len(BANDS), 0)).pack(side="right", padx=px(6))
+        Pill(row, self, "↶ 上一步", self.undo, size=9).pack(side="left")
+        Pill(row, self, "↷ 下一步", self.redo, size=9).pack(side="left", padx=px(6))
+        row = tk.Frame(c, bg=PANEL)
+        row.pack(fill="x", pady=(px(8), 0))
+        Pill(row, self, "匯出給手機", self.export_phone, size=9).pack(side="left")
+        self.label(row, "存成手機等化器 App 能讀的檔案（同一副耳機才準）", 8, SUB).pack(side="left", padx=px(8))
 
         # 右：空間感與平衡
         c = self.card(right, "空間感與平衡")
@@ -1360,8 +1452,10 @@ class App:
         foot.pack(fill="x", padx=px(16), pady=(0, px(10)))
         self.status = self.label(foot, "", 9, GREEN, anchor="w")
         self.status.pack(side="left")
-        self.hk_lbl = self.label(foot, "快捷鍵　" + "　".join(f"{n} {d}" for _i, _m, _v, n, d in HOTKEYS), 9, SUB)
+        self.hk_lbl = self.label(foot, "空白鍵 開關EQ　←→ 換風格　Ctrl+Z 上一步　全域：" +
+                                 "　".join(f"{n} {d}" for _i, _m, _v, n, d in HOTKEYS), 9, SUB)
         self.hk_lbl.pack(side="right")
+        self.attach_help(r)
 
     def build_base_pills(self):
         px = self.px
@@ -1459,6 +1553,7 @@ class App:
 
     def set_hp(self, hp):
         self.hp = hp
+        self._base_curves.clear()
         set_headphone(hp)
         update_headroom()
         self.build_base_pills()
@@ -1497,29 +1592,196 @@ class App:
         self.label(row, sub, 8, SUB).pack(anchor="w")
 
     def show_group(self, gi):
-        """切換快速風格分頁；每頁固定一樣多格（依最多的那頁），數量不足補空白，版面高度才不會變"""
-        px = self.px
+        """切換快速風格分頁（會清掉搜尋）"""
         self.group = gi
+        if getattr(self, "search_var", None) is not None and self.search_var.get():
+            self._quiet_search = True
+            self.search_var.set("")
+            self._quiet_search = False
+        start = sum(len(g) for _n, g in STYLE_GROUPS[:gi])
+        self.show_list(list(range(start, start + len(STYLE_GROUPS[gi][1]))), gi)
+
+    def show_list(self, idxs, gi=None):
+        """在按鈕區顯示這些風格；每次固定一樣多格（依最多的那頁），不足補空白，版面高度才不會變"""
+        px = self.px
         for i, (lbl, bar) in enumerate(self.tabs):
             lbl.config(fg=TEXT if i == gi else SUB)
             bar.config(bg=ACCENT if i == gi else PANEL)
         for w in self.style_grid.winfo_children():
             w.destroy()
         self.style_btns = {}
-        start = sum(len(g) for _n, g in STYLE_GROUPS[:gi])
-        group = STYLE_GROUPS[gi][1]
-        for j in range(3 * math.ceil(max(len(g) for _n, g in STYLE_GROUPS) / 3)):
-            if j < len(group):
-                name, vals, width, cf, _src = group[j]
-                w = Pill(self.style_grid, self, name, lambda i=start + j: self.apply_style(i), size=9)
-                self.style_btns[start + j] = w
-                w.bind("<Enter>", lambda _e, i=start + j: self.show_info(i), add="+")
+        slots = 3 * math.ceil(max(len(g) for _n, g in STYLE_GROUPS) / 3)
+        for j in range(slots):
+            if j < len(idxs):
+                i = idxs[j]
+                w = Pill(self.style_grid, self, STYLES[i][0], lambda i=i: self.apply_style(i), size=9)
+                self.style_btns[i] = w
+                w.bind("<Enter>", lambda _e, i=i: self.show_info(i), add="+")
                 w.bind("<Leave>", lambda _e: self.show_info(self.current_style()), add="+")
+            elif j == 0:
+                w = tk.Label(self.style_grid, text="找不到，換個字試試（例：搖滾、人聲、低音）", font=(FONT, 9),
+                             bg=PANEL, fg=SUB, pady=px(5))
+                w.grid(row=0, column=0, columnspan=3, sticky="w", padx=px(4), pady=px(2))
+                continue
+            elif not idxs and j < 3:  # 第一排被「找不到」的說明占用
+                continue
             else:
                 w = tk.Label(self.style_grid, text=" ", font=(FONT, 9), bg=PANEL, pady=px(5))
             w.grid(row=j // 3, column=j % 3, sticky="ew", padx=px(2), pady=px(2))
         self.style_grid.columnconfigure((0, 1, 2), weight=1, uniform="s")
         self.highlight_style(self.current_style())
+
+    def search_styles(self):
+        """搜尋框：比對風格名稱和白話介紹（所有分頁一起找）"""
+        if getattr(self, "_quiet_search", False):
+            return
+        q = self.search_var.get().strip().lower()
+        if not q:
+            self.show_group(self.group)
+            return
+        self.show_list([i for i, st in enumerate(STYLES) if q in st[0].lower() or q in PLAIN.get(st[0], "").lower()])
+
+    def typing(self):
+        return isinstance(self.root.focus_get(), tk.Entry)
+
+    # ---------- 更直覺：按住聽原音、名詞說明、怎麼用、上一步 ----------
+    def hold_original(self, down):
+        """按住＝暫時關掉 EQ（音量不變），放開就回來"""
+        if self.passthrough.get():
+            return
+        if down and self.enabled.get():
+            self._holding = True
+            self.enabled.set(False)
+        elif not down and getattr(self, "_holding", False):
+            self._holding = False
+            self.enabled.set(True)
+        else:
+            return
+        self.ab_btn.set_selected(down)
+        self.redraw()
+        self.write_config()
+
+    def attach_help(self, widget):
+        """畫面上跟 HELP 同名的標籤：滑鼠移上去跳出白話說明"""
+        for w in widget.winfo_children():
+            if type(w) is tk.Label and w.cget("text") in HELP:
+                self.tip(w, HELP[w.cget("text")])
+            self.attach_help(w)
+
+    def tip(self, widget, text):
+        widget.config(cursor="question_arrow")
+
+        def show():
+            self.hide_tip()
+            t = self._tip = tk.Toplevel(self.root, bg=TIP_BG)
+            t.overrideredirect(True)
+            t.attributes("-topmost", True)
+            tk.Label(t, text=text, font=(FONT, 10), fg="white", bg=TIP_BG, justify="left",
+                     wraplength=self.px(340), padx=self.px(12), pady=self.px(8)).pack()
+            t.geometry(f"+{widget.winfo_rootx()}+{widget.winfo_rooty() + widget.winfo_height() + self.px(4)}")
+
+        def enter(_e):
+            self._tip_job = self.root.after(300, show)
+
+        widget.bind("<Enter>", enter, add="+")
+        widget.bind("<Leave>", lambda _e: self.hide_tip(), add="+")
+
+    def hide_tip(self):
+        if self._tip_job:
+            self.root.after_cancel(self._tip_job)
+            self._tip_job = None
+        if self._tip:
+            self._tip.destroy()
+            self._tip = None
+
+    def show_guide(self):
+        px = self.px
+        win = self.dialog("怎麼用", "六個步驟就上手：")
+        for n, (title, text) in enumerate(GUIDE, 1):
+            row = tk.Frame(win, bg=PANEL)
+            row.pack(fill="x", padx=px(16), pady=px(4))
+            tk.Label(row, text=str(n), font=(NUM, 11, "bold"), fg="white", bg=ACCENT, width=2).pack(side="left", anchor="n")
+            box = tk.Frame(row, bg=PANEL)
+            box.pack(side="left", fill="x", padx=px(10))
+            self.label(box, title, 11, bold=True).pack(anchor="w")
+            self.label(box, text, 10, SUB, justify="left", wraplength=px(520)).pack(anchor="w")
+        Pill(win, self, "知道了", win.destroy, primary=True).pack(anchor="e", padx=px(16), pady=(px(8), px(14)))
+
+    TUNE_KEYS = ("base", "bands", "width", "crossfeed", "balance", "room")
+
+    def record(self):
+        """設定穩定下來（寫進 EQ）時記一筆，給「上一步」用"""
+        snap = {k: self.snapshot()[k] for k in self.TUNE_KEYS}
+        if self._last_snap is not None and snap != self._last_snap:
+            self.hist.append(self._last_snap)
+            del self.hist[:-50]
+            self.fut.clear()
+        self._last_snap = snap
+
+    def apply_snap(self, p):
+        self.base.set(p.get("base") if p.get("base") in BASES else default_base())
+        self.balance.set(p.get("balance", 0))
+        self.room.set(p.get("room", 0))
+        self.set_bands(p.get("bands", [0] * len(BANDS)), p.get("width", 0), p.get("crossfeed", 0))
+
+    def undo(self):
+        if not self.hist:
+            self.toast("沒有上一步了")
+            return
+        self.fut.append(self._last_snap)
+        self._last_snap = self.hist.pop()
+        self.apply_snap(self._last_snap)
+        self.toast("↶ 上一步")
+
+    def redo(self):
+        if not self.fut:
+            self.toast("沒有下一步了")
+            return
+        self.hist.append(self._last_snap)
+        self._last_snap = self.fut.pop()
+        self.apply_snap(self._last_snap)
+        self.toast("↷ 下一步")
+
+    def export_phone(self):
+        """把耳機校正＋細調合成一條曲線，存成 AutoEQ 的 GraphicEQ 格式（手機等化器 App 多半能匯入），也複製到剪貼簿"""
+        base, style = self.filters()
+        freqs = [20 * 1000 ** (i / 126) for i in range(127)]
+        gains = [sum(filter_db(*fl, f) for fl in base + style) for f in freqs]
+        top = max(gains)
+        text = "GraphicEQ: " + "; ".join(f"{f:.0f} {g - max(0.0, top):.1f}" for f, g in zip(freqs, gains))
+        idx = self.current_style()
+        name = re.sub(r'[\\/:*?"<>|]', "_", STYLES[idx][0] if idx >= 0 else "我的調音")
+        path = filedialog.asksaveasfilename(parent=self.root, title="匯出給手機", initialfile=f"{name} GraphicEQ.txt",
+                                            defaultextension=".txt", filetypes=[("文字檔", "*.txt")])
+        self.root.clipboard_clear()
+        self.root.clipboard_append(text)
+        if path:
+            with open(path, "w", encoding="utf-8") as fh:
+                fh.write(text + "\n")
+        messagebox.showinfo("匯出給手機", ("已存成檔案，也" if path else "") + "複製到剪貼簿了。\n\n"
+                            "在手機的等化器 App 選「匯入 AutoEQ／GraphicEQ」（例如 JamesDSP 的任意響應等化器、Wavelet），"
+                            "貼上或選這個檔案就好。\n\n只包含耳機校正和細調；聲場寬度、交叉饋送、殘響不會帶過去。",
+                            parent=self.root)
+
+    def fit_screen(self):
+        """螢幕比較小（例如筆電 150% 縮放）時整個畫面等比例縮小重畫，視窗才不會超出螢幕"""
+        self.root.update_idletasks()
+        area = work_area()
+        if not area:
+            return
+        f = min(1.0, area[0] / self.root.winfo_reqwidth(), area[1] / self.root.winfo_reqheight())
+        if f >= 0.99:
+            return
+        f *= 0.98
+        self.scale *= f
+        self.root.tk.call("tk", "scaling", float(self.root.tk.call("tk", "scaling")) * f)
+        for w in self.root.winfo_children():
+            w.destroy()
+        self.style_theme()
+        self.build()
+        self.root.update_idletasks()
+        self.fit_style_grid()
+        self.fit_source_box()
 
     @staticmethod
     def group_of(idx):
@@ -1806,13 +2068,17 @@ class App:
         cv.create_text(L - px(6), y(0), text="0", anchor="e", fill=SUB, font=(NUM, 8))
         base, style = self.filters()
         on = self.enabled.get() and not self.passthrough.get()
-        total = curve(base + style) if on and (base or style) else [0.0] * len(FREQS)
+        key = (self.base.get(), (self.hp or {}).get("name"))
+        if key not in self._base_curves:
+            self._base_curves[key] = curve(base)
+        total = ([a + b for a, b in zip(self._base_curves[key], curve(style))] if on and (base or style)
+                 else [0.0] * len(FREQS))
         pts = [c for f, db in zip(FREQS, total) for c in (x(f), y(db))]
         cv.create_polygon(x(FREQS[0]), y(0), *pts, x(FREQS[-1]), y(0), fill=FILL, outline="")
         cv.create_line(L, y(0), W - R, y(0), fill=ZERO_LINE)
         if on and style:
             spts = [c for f, db in zip(FREQS, curve(style)) for c in (x(f), y(db))]
-            cv.create_line(*spts, fill=ORANGE, width=px(1.5), dash=(4, 3))
+            cv.create_line(*spts, fill=TWEAK, width=px(1.5), dash=(4, 3))
         cv.create_line(*pts, fill=ACCENT if on else SUB, width=px(2.5), smooth=False)
         if not on:
             msg = "直通模式：完全不處理（最接近獨佔模式）" if self.passthrough.get() else "EQ 已關閉（原音，音量不變）"
@@ -1829,10 +2095,12 @@ class App:
             notes.append(f"殘響：{ROOMS[int(self.room.get())][0]}")
         if notes:
             cv.create_text(W - R - px(4), T + px(4), anchor="ne", text="　".join(notes),
-                           fill=ORANGE, font=(FONT, 9, "bold"))
+                           fill=VALUE, font=(FONT, 9, "bold"))
 
     def write_config(self):
         self._job = None
+        if not getattr(self, "_holding", False):
+            self.record()
         base, style = self.filters()
         through = self.passthrough.get()
         on = self.enabled.get() and not through
@@ -2012,10 +2280,7 @@ class App:
     def load_preset(self, _e=None):
         p = self.presets.get(self.preset_box.get())
         if p:
-            self.base.set(p.get("base") if p.get("base") in BASES else default_base())
-            self.balance.set(p.get("balance", 0))
-            self.room.set(p.get("room", 0))
-            self.set_bands(p.get("bands", [0] * len(BANDS)), p.get("width", 0), p.get("crossfeed", 0))
+            self.apply_snap(p)
 
     def delete_preset(self):
         name = self.preset_box.get()

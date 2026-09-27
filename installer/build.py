@@ -104,14 +104,14 @@ def write_bmp(path, rows):
 
 
 def make_wizard_images():
-    """安裝精靈左邊的大圖（淺藍底＋大圖示）和右上角的小圖示，各做一般和高解析度兩種"""
+    """安裝精靈左邊的大圖（奶油色底＋大圖示）和右上角的小圖示，各做一般和高解析度兩種"""
     out = os.path.join(HERE, "build")
     os.makedirs(out, exist_ok=True)
     icon = read_png(os.path.join(HERE, "tuner.png"))
     for scale, suffix in ((1, ""), (2, "_2x")):
         w, h = 164 * scale, 314 * scale
         s = 120 * scale
-        write_bmp(os.path.join(out, f"wizard{suffix}.bmp"), canvas(w, h, (0xEE, 0xF3, 0xFB), resize(icon, s, s), (w - s) // 2, (h - s) // 2))
+        write_bmp(os.path.join(out, f"wizard{suffix}.bmp"), canvas(w, h, (0xFB, 0xF5, 0xEE), resize(icon, s, s), (w - s) // 2, (h - s) // 2))
         s = 55 * scale
         write_bmp(os.path.join(out, f"wizard_small{suffix}.bmp"), canvas(s, s, WHITE, resize(icon, s, s), 0, 0))
 
