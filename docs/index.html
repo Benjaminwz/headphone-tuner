@@ -107,6 +107,7 @@
         <div class="results" id="hpres"></div>
         <div style="margin-top:10px"><b id="hpname">還沒選耳機</b></div>
         <div class="chips" id="bases" style="margin-top:8px"></div>
+        <div class="note" id="apple" hidden style="margin-top:10px"></div>
       </section>
 
       <section class="card">
@@ -228,8 +229,17 @@ async function loadIndex() {
     if (!models.has(m[1])) models.set(m[1], []);
     models.get(m[1]).push([m[3].split(" on ")[0].trim(), m[2].slice(2)]);
   }
+  // 同一款耳機寫法不同（大小寫、空格，例如 AirPods Pro2／Airpods Pro 2）→ 合併；名稱取大寫、空格最多的寫法
+  const groups = new Map(), nice = n => (n.match(/[A-Z]/g) || []).length * 100 + (n.match(/ /g) || []).length;
+  for (const [n, ent] of models) {
+    const k = norm(n);
+    if (!groups.has(k)) groups.set(k, {names: [], ent: []});
+    groups.get(k).names.push(n); groups.get(k).ent.push(...ent);
+  }
+  models.clear();
+  for (const g of groups.values()) models.set(g.names.reduce((a, b) => nice(b) > nice(a) ? b : a), g.ent);
   for (const [alias, sibs] of Object.entries(DATA.estimated)) {   // 沒量過的型號：用同系列兄弟機推估
-    const lists = sibs.map(s => (models.get(s) || []).map(e => [e[0] + "（" + s.split("-").pop() + "）", e[1]]));
+    const lists = sibs.map(s => (models.get(s) || []).map(e => [e[0] + "（" + (s.includes("-") ? s.split("-") : s.split(" ")).pop() + "）", e[1]]));
     const ent = [];
     for (let i = 0; lists.some(l => i < l.length); i++) lists.forEach(l => { if (i < l.length) ent.push(l[i]); });
     if (ent.length) models.set(alias, ent);
@@ -445,10 +455,30 @@ async function copyText(t, btn) {
   const old = btn.textContent; btn.textContent = "已複製 ✓"; setTimeout(() => btn.textContent = old, 1400);
 }
 
+// ---------------------------------------------------------------- AirPods／EarPods／Beats 在 iPhone：內建「耳機調節」建議
+// App 改不了 Apple 耳機的聲音，但 iOS 內建的耳機調節可以加強三種範圍（輕微／中等／強）。
+// 依你選的調音（校正＋風格＋細調）在各範圍要加強多少，挑最接近的一項。只是近似：Apple 沒公布這三項的確切曲線。
+function renderApple() {
+  const box = $("apple"), hp = S.hp;
+  if (!hp || !/airpods|earpods|beats/i.test(hp.name)) { box.hidden = true; return; }
+  const T = curve(allFilters());
+  const avg = (lo, hi) => { const v = FREQS.map((f, i) => [f, T[i]]).filter(([f]) => f >= lo && f <= hi); return v.reduce((s, x) => s + x[1], 0) / v.length; };
+  const opts = [["人聲範圍", avg(1000, 4000)], ["亮度", avg(4000, 10000)], ["平衡音調", avg(250, 8000)]];
+  const [name, gain] = opts.reduce((a, b) => b[1] > a[1] ? b : a);
+  const level = gain < 2.5 ? "輕微" : gain < 5 ? "中等" : "強";
+  const bass = avg(20, 150);
+  box.hidden = false;
+  box.innerHTML = `<b>用 iPhone 聽的話</b>　App 沒辦法改 AirPods／EarPods 的聲音，但 iPhone 內建「設定 → 輔助使用 → 音訊與視覺 → 耳機調節」可以：<br>` +
+    (gain < 1 ? `你選的調音在中高頻不需要加強，<b>耳機調節維持關閉</b>就好。`
+              : `建議選「<b>${name}</b>」、強度「<b>${level}</b>」（你的調音在這一段約加強 ${gain.toFixed(1)} dB）。`) +
+    (Math.abs(bass) >= 2 ? `<br>低音想${bass > 0 ? "多" : "少"}一點：耳機調節沒辦法調低音；用 Apple Music 的話，設定裡的「音樂 → 等化器」選「${bass > 0 ? "低音增強" : "減少低音"}」（只對 Apple Music 有效）。` : "") +
+    `<div class="hint">這是近似建議（Apple 沒公布耳機調節的確切曲線）。在電腦或 Android 上接 AirPods／EarPods，就能用完整的調音。</div>`;
+}
+
 // ---------------------------------------------------------------- 更新
 let exportJob = null;
 function update(fromSlider) {
-  renderBases(); renderBands(); renderTabs(); renderStyles(); drawCurve(); rebuildAudio(); save();
+  renderBases(); renderApple(); renderBands(); renderTabs(); renderStyles(); drawCurve(); rebuildAudio(); save();
   clearTimeout(exportJob); exportJob = setTimeout(renderExport, fromSlider ? 250 : 0);
 }
 

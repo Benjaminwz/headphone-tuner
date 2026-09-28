@@ -263,13 +263,32 @@ final class Eq {
             if (l == null) models.put(m.group(1), l = new ArrayList<>());
             l.add(new String[]{src, m.group(2).substring(2)});
         }
+        // 同一款耳機在資料庫裡寫法不同（大小寫、空格，例如 AirPods Pro2／Airpods Pro 2）→ 合併，量測份數才多；
+        // 顯示名稱取大寫、空格最多的寫法
+        Map<String, List<String>> names = new LinkedHashMap<>();
+        Map<String, List<String[]>> ents = new LinkedHashMap<>();
+        for (Map.Entry<String, List<String[]>> e : models.entrySet()) {
+            String k = norm(e.getKey());
+            if (!names.containsKey(k)) {
+                names.put(k, new ArrayList<String>());
+                ents.put(k, new ArrayList<String[]>());
+            }
+            names.get(k).add(e.getKey());
+            ents.get(k).addAll(e.getValue());
+        }
+        models = new LinkedHashMap<>();
+        for (String k : names.keySet()) {
+            String best = null;
+            for (String n : names.get(k)) if (best == null || nice(n) > nice(best)) best = n;
+            models.put(best, ents.get(k));
+        }
         // 資料庫沒量過的型號：用同系列兄弟機推估（兩支交錯取）
         for (Map.Entry<String, List<String>> e : ESTIMATED.entrySet()) {
             List<List<String[]>> lists = new ArrayList<>();
             for (String sib : e.getValue()) {
                 List<String[]> l = new ArrayList<>();
                 List<String[]> got = models.get(sib);
-                String tag = sib.substring(sib.lastIndexOf('-') + 1);
+                String tag = sib.contains("-") ? sib.substring(sib.lastIndexOf('-') + 1) : sib.substring(sib.lastIndexOf(' ') + 1);
                 if (got != null) for (String[] s : got) l.add(new String[]{s[0] + "（" + tag + "）", s[1]});
                 lists.add(l);
             }
@@ -322,6 +341,15 @@ final class Eq {
         }
         if (out.length() == 0) throw last != null ? last : new Exception("沒有可用的資料");
         return new JSONObject().put("name", name).put("sources", out);
+    }
+
+    static int nice(String n) {
+        int up = 0, sp = 0;
+        for (char c : n.toCharArray()) {
+            if (Character.isUpperCase(c)) up++;
+            if (c == ' ') sp++;
+        }
+        return up * 100 + sp;
     }
 
     static String norm(String s) {

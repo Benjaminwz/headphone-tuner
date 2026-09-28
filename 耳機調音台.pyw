@@ -96,6 +96,8 @@ SOURCE_ORDER = ["oratory1990", "crinacle", "Rtings", "Innerfidelity", "Super Rev
 # AutoEQ 沒有量測、但有同系列兄弟機的型號：名稱 → 用來推估的型號
 ESTIMATED = {
     "Sony MDR-XB400（同系列 XB300／XB500 推估）": ["Sony MDR-XB300", "Sony MDR-XB500"],  # 2010 年 Extra Bass 耳罩系列
+    # USB-C、Lightning 版 EarPods 跟 3.5mm 版同外殼、同單體，只差接頭（USB-C 版內建小解碼器）
+    "Apple EarPods（USB-C／Lightning，同單體）": ["Apple EarPods"],
 }
 
 
@@ -1026,9 +1028,19 @@ def load_headphone_index():
     for m in re.finditer(r"^- \[(.+)\]\((\./.+)\) by (.+)$", text, re.M):
         name, link, by = m.groups()
         models.setdefault(name, []).append((by.split(" on ")[0].strip(), link[2:]))
+    # 同一款耳機在資料庫裡寫法不同（大小寫、空格，例如 AirPods Pro2／Airpods Pro 2）→ 合併，量測份數才多
+    groups = {}
+    for name, ent in models.items():
+        g = groups.setdefault(re.sub(r"[^0-9a-z]", "", name.lower()), [[], []])
+        g[0].append(name)
+        g[1].extend(ent)
+    # 顯示名稱取大寫、空格最多的寫法（AirPods Pro 2 比 Airpods Pro2 正確）
+    nice = lambda n: (sum(c.isupper() for c in n), n.count(" "))
+    models = {max(names, key=nice): ent for names, ent in groups.values()}
     # 資料庫沒量過的型號：用同系列、同年代的兄弟機量測推估（兩支交錯取，「多份平均」＝兩支的平均）
+    tag = lambda sib: sib.split("-")[-1] if "-" in sib else sib.split()[-1]  # 按鈕上標出是哪一支的量測
     for alias, sibs in ESTIMATED.items():
-        lists = [[(f"{src}（{sib.split('-')[-1]}）", link) for src, link in models.get(sib, [])] for sib in sibs]
+        lists = [[(f"{src}（{tag(sib)}）", link) for src, link in models.get(sib, [])] for sib in sibs]
         ent = [e for group in itertools.zip_longest(*lists) for e in group if e]
         if ent:
             models[alias] = ent
