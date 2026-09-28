@@ -1,0 +1,13 @@
+{
+  "name": "耳機調音台",
+  "short_name": "耳機調音台",
+  "description": "繁體中文的耳機調音：AutoEQ 校正＋50 多種依研究資料的風格，匯出到有內建等化器的解碼器",
+  "start_url": "./",
+  "display": "standalone",
+  "background_color": "#FBF5EE",
+  "theme_color": "#FBF5EE",
+  "icons": [
+    {"src": "icon-192.png", "sizes": "192x192", "type": "image/png"},
+    {"src": "icon-512.png", "sizes": "512x512", "type": "image/png"}
+  ]
+}

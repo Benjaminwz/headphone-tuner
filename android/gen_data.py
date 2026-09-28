@@ -53,4 +53,15 @@ vec = f'''<?xml version="1.0" encoding="utf-8"?>
 os.makedirs(os.path.join(HERE, "res", "drawable"), exist_ok=True)
 with open(os.path.join(HERE, "res", "drawable", "ic_fg.xml"), "w", encoding="utf-8") as fh:
     fh.write(vec)
+# ---------- 網頁版（docs/，GitHub Pages，給 iPhone 用）：同一份資料＋主畫面圖示 ----------
+DOCS = os.path.join(ROOT, "docs")
+os.makedirs(DOCS, exist_ok=True)
+with open(os.path.join(DOCS, "data.json"), "w", encoding="utf-8") as fh:
+    json.dump(data, fh, ensure_ascii=False, separators=(",", ":"))
+ispec = importlib.util.spec_from_file_location("icon", os.path.join(ROOT, "installer", "make_icon.py"))
+icon = importlib.util.module_from_spec(ispec)
+ispec.loader.exec_module(icon)
+for size in (180, 192, 512):
+    with open(os.path.join(DOCS, f"icon-{size}.png"), "wb") as fh:
+        fh.write(icon.png_bytes(icon.render(size, ss=4 if size > 256 else 8, full=True)))
 print("styles", sum(len(g["styles"]) for g in data["groups"]), "groups", len(data["groups"]))

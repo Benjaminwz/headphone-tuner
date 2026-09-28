@@ -11,8 +11,9 @@ ROOT = os.path.dirname(HERE)
 TOP, BOTTOM = np.array([0xF2, 0x8C, 0x4C]), np.array([0xCF, 0x5A, 0x1E])  # 跟調音台介面一樣的陶土橘（上亮下深）
 
 
-def render(size, ss=8):
-    """在 256×256 的座標裡畫，超取樣 ss 倍再平均 → 邊緣平滑。回傳 size×size×4 的 RGBA"""
+def render(size, ss=8, full=False):
+    """在 256×256 的座標裡畫，超取樣 ss 倍再平均 → 邊緣平滑。回傳 size×size×4 的 RGBA。
+    full＝底色鋪滿整個正方形（iPhone 主畫面圖示：透明的角會變黑，系統會自己裁圓角）"""
     n = size * ss
     y, x = (np.mgrid[0:n, 0:n] + 0.5) * (256 / n)
 
@@ -21,7 +22,7 @@ def render(size, ss=8):
         dy = np.maximum(np.maximum(y0 + r - y, y - (y1 - r)), 0)
         return (dx ** 2 + dy ** 2 <= r * r) & (x >= x0) & (x <= x1) & (y >= y0) & (y <= y1)
 
-    bg = rrect(8, 8, 248, 248, 56)
+    bg = np.ones_like(x, dtype=bool) if full else rrect(8, 8, 248, 248, 56)
     d = np.hypot(x - 128, y - 142)
     band = (np.abs(d - 80) <= 10) & (y <= 142)  # 頭帶：上半圓
     cups = rrect(34, 128, 76, 206, 16) | rrect(180, 128, 222, 206, 16)  # 左右耳罩

@@ -20,6 +20,14 @@
 - **快捷鍵**：Ctrl+Alt+E 開關 EQ、Ctrl+Alt+PgUp／PgDn 換風格（在其他程式裡也能用）
 - 暖色系介面；螢幕比較小（例如筆電 150% 縮放）會自動縮小，不會超出螢幕
 
+## 網頁版（iPhone、iPad、任何瀏覽器）
+
+**打開：https://benjaminwz.github.io/headphone-tuner/**（Safari 按「分享 → 加入主畫面」就像 App 一樣）
+
+iPhone 不允許任何 App 改其他 App（例如 Tidal）的聲音，所以網頁版是：同一套耳機校正＋風格＋細調，
+**匯出成參數等化（5／8／10／15 段，自動擬合）給有內建等化器的解碼器／耳擴**（聲音在解碼器裡處理，iPhone 上的 Tidal 也有效），
+另外可以**用自己的音樂檔直接試聽**（含按住聽原音）。資料只存在你的瀏覽器裡。
+
 ## 手機版（Android）
 
 到 [Releases](../../releases) 下載 `HeadphoneTuner-Android-版本.apk`，在手機上打開安裝（第一次要允許「安裝未知應用程式」）。

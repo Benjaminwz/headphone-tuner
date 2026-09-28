@@ -1,0 +1,485 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>耳機調音台</title>
+<meta name="description" content="繁體中文的耳機調音：AutoEQ 校正＋50 多種依研究資料的風格，iPhone、Android、電腦都能用">
+<meta name="theme-color" content="#FBF5EE">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="耳機調音台">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<link rel="apple-touch-icon" href="icon-180.png">
+<link rel="icon" href="icon-192.png">
+<link rel="manifest" href="manifest.webmanifest">
+<style>
+  :root {
+    --bg: #FBF5EE; --card: #FFFFFF; --text: #3B2A1E; --sub: #8C7461; --accent: #D9692B; --accent-hi: #E8823F;
+    --pill: #F8EEE3; --pill-hi: #F1E1CF; --line: #EFE2D3; --fill: #FCE8D8; --tweak: #8A5A36; --value: #C0561B;
+    --green: #4E8A3E; --warn: #B8452B;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; background: var(--bg); color: var(--text); }
+  body { font-family: "Noto Sans TC", "PingFang TC", "Microsoft JhengHei", system-ui, sans-serif; font-size: 15px; line-height: 1.55;
+         -webkit-text-size-adjust: 100%; padding: max(16px, env(safe-area-inset-top)) 16px 40px; }
+  .wrap { max-width: 1120px; margin: 0 auto; }
+  header { display: flex; align-items: center; gap: 12px; margin-bottom: 14px; }
+  header img { width: 44px; height: 44px; border-radius: 11px; }
+  h1 { font-size: 24px; margin: 0; letter-spacing: .5px; }
+  .tag { color: var(--sub); font-size: 13px; }
+  .grid { display: grid; gap: 14px; grid-template-columns: 1fr; }
+  @media (min-width: 900px) { .grid { grid-template-columns: 1fr 1fr; align-items: start; } .col { display: grid; gap: 14px; } }
+  @media (max-width: 899px) { .col { display: contents; } }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 16px; padding: 14px 16px 16px; }
+  .card h2 { font-size: 17px; margin: 0 0 10px; display: flex; align-items: center; gap: 8px; }
+  .card h2::before { content: ""; width: 3px; height: 16px; background: var(--accent); border-radius: 2px; }
+  .hint { color: var(--sub); font-size: 13px; margin: 6px 0 0; }
+  .note { background: var(--fill); border-radius: 12px; padding: 12px 14px; font-size: 14px; }
+  .note b { color: var(--value); }
+  .note ul { margin: 6px 0 0; padding-left: 20px; }
+  .chips { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; }
+  @media (min-width: 520px) { .chips.three { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
+  .chip { background: var(--pill); color: var(--text); border: 0; border-radius: 10px; padding: 9px 10px; font: inherit; font-size: 14px;
+          cursor: pointer; text-align: center; min-height: 40px; }
+  .chip:hover { background: var(--pill-hi); }
+  .chip.on, .btn { background: var(--accent); color: #fff; }
+  .chip.on:hover, .btn:hover { background: var(--accent-hi); }
+  .btn { border: 0; border-radius: 10px; padding: 10px 16px; font: inherit; font-size: 15px; cursor: pointer; }
+  .btn.ghost { background: var(--pill); color: var(--text); }
+  .tabs { display: flex; gap: 6px; overflow-x: auto; padding-bottom: 4px; margin: 8px 0; -webkit-overflow-scrolling: touch; }
+  .tabs .chip { flex: 0 0 auto; padding: 7px 14px; min-height: 36px; }
+  input[type=search], input[type=text], select, textarea {
+    width: 100%; font: inherit; font-size: 16px; color: var(--text); background: var(--pill); border: 1px solid var(--line);
+    border-radius: 10px; padding: 10px 12px; outline: none; }
+  input:focus, select:focus, textarea:focus { border-color: var(--accent); }
+  textarea { font-family: ui-monospace, Consolas, monospace; font-size: 13px; min-height: 150px; resize: vertical; }
+  .results { max-height: 260px; overflow-y: auto; margin-top: 6px; border-radius: 10px; }
+  .results button { display: block; width: 100%; text-align: left; background: none; border: 0; border-bottom: 1px solid var(--line);
+                    padding: 10px 6px; font: inherit; color: var(--text); cursor: pointer; }
+  .results button:hover { background: var(--pill); }
+  .results small { color: var(--sub); }
+  .info { background: var(--pill); border-radius: 12px; padding: 10px 12px; margin-top: 10px; min-height: 78px; }
+  .info b { color: var(--value); font-size: 16px; }
+  canvas { width: 100%; height: 200px; display: block; }
+  .band { display: grid; grid-template-columns: 86px 1fr 66px; align-items: center; gap: 8px; padding: 4px 0; }
+  .band b { display: block; font-size: 15px; }
+  .band small { color: var(--sub); font-size: 11px; }
+  .band span { text-align: right; color: var(--value); font-weight: 600; font-variant-numeric: tabular-nums; }
+  input[type=range] { width: 100%; accent-color: var(--accent); }
+  .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-top: 8px; }
+  audio { width: 100%; margin-top: 8px; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; font-variant-numeric: tabular-nums; margin-top: 8px; }
+  td, th { padding: 5px 6px; border-bottom: 1px solid var(--line); text-align: right; }
+  th { color: var(--sub); font-weight: 500; }
+  td:first-child, th:first-child { text-align: left; }
+  .ok { color: var(--green); } .bad { color: var(--warn); }
+  footer { color: var(--sub); font-size: 13px; text-align: center; margin-top: 22px; }
+  a { color: var(--value); }
+  .hold { width: 100%; padding: 14px; font-size: 16px; user-select: none; -webkit-user-select: none; touch-action: none; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <img src="icon-180.png" alt="">
+    <div>
+      <h1>耳機調音台</h1>
+      <div class="tag">網頁版：iPhone、iPad、任何瀏覽器都能用　·　<a href="https://github.com/Benjaminwz/headphone-tuner/releases/latest">電腦版、Android 版下載</a></div>
+    </div>
+  </header>
+
+  <div class="note" style="margin-bottom:14px">
+    <b>iPhone 能做什麼？</b>　Apple 不允許任何 App 改其他 App（例如 Tidal）的聲音，所以沒辦法像電腦、Android 那樣整支手機套用。這個網頁版可以：
+    <ul>
+      <li><b>匯出到有內建等化器的解碼器／耳擴</b>（FiiO、Qudelix 等有參數等化的機型）：聲音在解碼器裡處理，iPhone 上的 Tidal 也有效</li>
+      <li><b>用自己的音樂檔試聽</b>：選一首歌，直接聽調音前後的差別</li>
+      <li>用 AirPods 的話，iPhone 內建「設定 → 輔助使用 → 音訊與視覺 → 耳機調節」也能微調</li>
+    </ul>
+    <div class="hint">小技巧：Safari 按「分享」→「加入主畫面」，就會像 App 一樣出現在桌面。</div>
+  </div>
+
+  <div class="grid">
+    <div class="col">
+      <section class="card">
+        <h2>耳機校正</h2>
+        <input type="search" id="hpq" placeholder="輸入耳機型號（例：HD 600、XM5、AirPods Max）" autocomplete="off">
+        <div class="hint" id="hpmsg">資料來自 AutoEQ（6000 多款），調到研究上最多人喜歡的 Harman 目標</div>
+        <div class="results" id="hpres"></div>
+        <div style="margin-top:10px"><b id="hpname">還沒選耳機</b></div>
+        <div class="chips" id="bases" style="margin-top:8px"></div>
+      </section>
+
+      <section class="card">
+        <h2>快速風格</h2>
+        <input type="search" id="sq" placeholder="搜尋：搖滾、人聲、低音…" autocomplete="off">
+        <div class="tabs" id="tabs"></div>
+        <div class="chips three" id="styles"></div>
+        <div class="info"><b id="iname">只校正</b><div id="iplain"></div></div>
+      </section>
+    </div>
+
+    <div class="col">
+      <section class="card">
+        <h2>EQ 曲線</h2>
+        <div class="hint" style="margin:0 0 6px">橘線＝整體效果（校正＋風格）　咖啡色虛線＝你的細調</div>
+        <canvas id="cv"></canvas>
+      </section>
+
+      <section class="card">
+        <h2>細調</h2>
+        <div id="bands"></div>
+        <div class="row"><button class="chip" id="zero">細調歸零</button></div>
+      </section>
+
+      <section class="card">
+        <h2>用自己的音樂檔試聽</h2>
+        <input type="file" id="file" accept="audio/*">
+        <audio id="au" controls playsinline></audio>
+        <button class="chip hold" id="hold">按住聽原音</button>
+        <div class="hint">音量已自動預留，調音前後音量一樣，比較才公平。只影響這個網頁裡播的歌。</div>
+      </section>
+
+      <section class="card">
+        <h2>匯出到解碼器／App</h2>
+        <div class="row" style="margin-top:0">
+          <label for="nb">段數</label>
+          <select id="nb" style="width:auto">
+            <option value="5">5 段</option><option value="8">8 段</option><option value="10" selected>10 段</option>
+            <option value="15">15 段</option><option value="0">不限（原始）</option>
+          </select>
+          <span class="hint" id="fitmsg" style="margin:0"></span>
+        </div>
+        <table id="ftab"></table>
+        <textarea id="peq" readonly></textarea>
+        <div class="row">
+          <button class="btn" id="copy">複製參數等化</button>
+          <button class="btn ghost" id="dl">下載 .txt</button>
+          <button class="btn ghost" id="copyg">複製 GraphicEQ</button>
+        </div>
+        <div class="hint">參數等化（PEQ）：在解碼器的 App 裡照表輸入（類型、頻率、增益、Q），或匯入這個 AutoEQ 格式的檔案。
+          GraphicEQ：給 Android 的 JamesDSP、Wavelet 等 App。選你裝置支援的段數，段數越多越準。</div>
+      </section>
+    </div>
+  </div>
+  <footer>耳機調音台 · <a href="https://github.com/Benjaminwz/headphone-tuner">GitHub</a> · 耳機資料來自 AutoEQ（MIT）</footer>
+</div>
+
+<script>
+"use strict";
+const RAW = "https://raw.githubusercontent.com/jaakkopasanen/AutoEq/master/results/";
+const FREQS = Array.from({length: 200}, (_, i) => 20 * Math.pow(1000, i / 199));
+const W = FREQS.map(f => f <= 10000 ? 1 : 0.3);
+const $ = id => document.getElementById(id);
+let DATA, STYLES = [], INDEX = null;
+let S = {hp: null, base: "none", bands: [0, 0, 0, 0, 0], style: null, group: 0};
+let holding = false;
+
+// ---------------------------------------------------------------- 計算（跟電腦版、Equalizer APO 同一套 RBJ 公式）
+function filterDb(t, fc, g, q, f) {
+  if (!g) return 0;
+  const fs = 48000, A = Math.pow(10, g / 40), w0 = 2 * Math.PI * fc / fs, c = Math.cos(w0), al = Math.sin(w0) / (2 * q);
+  let b0, b1, b2, a0, a1, a2;
+  if (t === "PK") { b0 = 1 + al * A; b1 = -2 * c; b2 = 1 - al * A; a0 = 1 + al / A; a1 = -2 * c; a2 = 1 - al / A; }
+  else {
+    const sq = 2 * Math.sqrt(A) * al;
+    if (t === "LSC") {
+      b0 = A * ((A + 1) - (A - 1) * c + sq); b1 = 2 * A * ((A - 1) - (A + 1) * c); b2 = A * ((A + 1) - (A - 1) * c - sq);
+      a0 = (A + 1) + (A - 1) * c + sq; a1 = -2 * ((A - 1) + (A + 1) * c); a2 = (A + 1) + (A - 1) * c - sq;
+    } else {
+      b0 = A * ((A + 1) + (A - 1) * c + sq); b1 = -2 * A * ((A - 1) + (A + 1) * c); b2 = A * ((A + 1) + (A - 1) * c - sq);
+      a0 = (A + 1) - (A - 1) * c + sq; a1 = 2 * ((A - 1) - (A + 1) * c); a2 = (A + 1) - (A - 1) * c - sq;
+    }
+  }
+  const w = -2 * Math.PI * f / fs, cr = Math.cos(w), ci = Math.sin(w), c2r = Math.cos(2 * w), c2i = Math.sin(2 * w);
+  const nr = b0 + b1 * cr + b2 * c2r, ni = b1 * ci + b2 * c2i, dr = a0 + a1 * cr + a2 * c2r, di = a1 * ci + a2 * c2i;
+  return 10 * Math.log10((nr * nr + ni * ni) / (dr * dr + di * di));
+}
+const curve = fl => FREQS.map(f => fl.reduce((s, x) => s + filterDb(x[0], x[1], x[2], x[3], f), 0));
+const styleFilters = v => DATA.bands.map((b, i) => [b.type, b.fc, v[i], b.q]).filter(x => x[2]);
+
+function bases(hp) {
+  const out = [], srcs = (hp && hp.sources) || [], est = !!(hp && DATA.estimated[hp.name]);
+  const keys = ["autoeq", "src2", "src3"], avg = [];
+  srcs.slice(0, 3).forEach((s, i) => {
+    out.push({key: keys[i], label: s[0] + (i === 0 && !est ? "（推薦）" : " 量測"), fl: s[1]});
+    s[1].forEach(f => avg.push([f[0], f[1], f[2] / Math.min(3, srcs.length), f[3]]));
+  });
+  if (srcs.length >= 2) out.push({key: "avg", label: est ? "多份平均（推薦）" : "多份平均（最不偏）", fl: avg});
+  out.push({key: "none", label: "不校正（耳機原味）", fl: []});
+  return out;
+}
+const defaultBase = hp => (hp && DATA.estimated[hp.name] && hp.sources.length >= 2) ? "avg" : (hp && hp.sources.length ? "autoeq" : "none");
+const baseFilters = () => (bases(S.hp).find(b => b.key === S.base) || {fl: []}).fl;
+const allFilters = () => baseFilters().concat(styleFilters(S.bands));
+
+// ---------------------------------------------------------------- 存狀態（只存在這台裝置的瀏覽器）
+function save() { try { localStorage.setItem("hptuner", JSON.stringify(S)); } catch (e) {} }
+function load() { try { const s = JSON.parse(localStorage.getItem("hptuner")); if (s && s.bands) S = Object.assign(S, s); } catch (e) {} }
+
+// ---------------------------------------------------------------- 耳機（AutoEQ）
+async function loadIndex() {
+  if (INDEX) return INDEX;
+  $("hpmsg").textContent = "下載耳機清單中…";
+  const text = await (await fetch(RAW + "INDEX.md")).text();
+  const models = new Map();
+  for (const line of text.split("\n")) {
+    const m = line.match(/^- \[(.+)\]\((\.\/.+)\) by (.+)$/);
+    if (!m) continue;
+    if (!models.has(m[1])) models.set(m[1], []);
+    models.get(m[1]).push([m[3].split(" on ")[0].trim(), m[2].slice(2)]);
+  }
+  for (const [alias, sibs] of Object.entries(DATA.estimated)) {   // 沒量過的型號：用同系列兄弟機推估
+    const lists = sibs.map(s => (models.get(s) || []).map(e => [e[0] + "（" + s.split("-").pop() + "）", e[1]]));
+    const ent = [];
+    for (let i = 0; lists.some(l => i < l.length); i++) lists.forEach(l => { if (i < l.length) ent.push(l[i]); });
+    if (ent.length) models.set(alias, ent);
+  }
+  INDEX = models;
+  $("hpmsg").textContent = `共 ${models.size} 款耳機，輸入型號搜尋`;
+  return models;
+}
+const norm = s => s.toLowerCase().replace(/[^0-9a-z]/g, "");
+async function searchHp() {
+  const q = norm($("hpq").value), box = $("hpres");
+  box.innerHTML = "";
+  if (!q) return;
+  let models;
+  try { models = await loadIndex(); } catch (e) { $("hpmsg").textContent = "耳機清單下載失敗（要有網路）"; return; }
+  const hits = [...models.keys()].filter(n => norm(n).includes(q)).sort((a, b) => a.length - b.length || a.localeCompare(b)).slice(0, 40);
+  $("hpmsg").textContent = hits.length ? `找到 ${hits.length} 個${hits.length === 40 ? "以上" : ""}，點一下選擇` : "找不到，換個寫法試試";
+  for (const n of hits) {
+    const b = document.createElement("button");
+    b.innerHTML = `${n.replace(/</g, "&lt;")} <small>（${new Set(models.get(n).map(e => e[0])).size} 份量測）</small>`;
+    b.onclick = () => pickHp(n);
+    box.appendChild(b);
+  }
+}
+async function pickHp(name) {
+  $("hpmsg").textContent = `下載「${name}」的校正資料中…`;
+  const order = DATA.source_order, rank = s => order.includes(s) ? order.indexOf(s) : order.length;
+  const entries = [...INDEX.get(name)].sort((a, b) => rank(a[0]) - rank(b[0]));
+  const seen = new Set(), sources = [];
+  for (const [src, link] of entries) {
+    if (seen.has(src) || sources.length >= 3) continue;
+    const leaf = decodeURIComponent(link.split("/").pop());
+    try {
+      const text = await (await fetch(RAW + link + "/" + encodeURIComponent(leaf + " ParametricEQ.txt"))).text();
+      const fl = [...text.matchAll(/ON (LSC|HSC|PK) Fc ([\d.]+) Hz Gain ([-\d.]+) dB Q ([\d.]+)/g)].map(m => [m[1], +m[2], +m[3], +m[4]]);
+      if (fl.length) { seen.add(src); sources.push([src, fl]); }
+    } catch (e) {}
+  }
+  if (!sources.length) { $("hpmsg").textContent = "下載失敗，請稍後再試"; return; }
+  S.hp = {name, sources};
+  S.base = defaultBase(S.hp);
+  $("hpres").innerHTML = "";
+  $("hpq").value = "";
+  $("hpmsg").textContent = `已選：${name}`;
+  update();
+}
+
+// ---------------------------------------------------------------- 畫面
+function chip(text, on, onclick) {
+  const b = document.createElement("button");
+  b.className = "chip" + (on ? " on" : "");
+  b.textContent = text;
+  b.onclick = onclick;
+  return b;
+}
+function renderBases() {
+  const box = $("bases");
+  box.innerHTML = "";
+  for (const b of bases(S.hp)) box.appendChild(chip(b.label, b.key === S.base, () => { S.base = b.key; update(); }));
+  $("hpname").textContent = S.hp ? "耳機：" + S.hp.name : "還沒選耳機（上面輸入型號）";
+}
+function renderTabs() {
+  const box = $("tabs");
+  box.innerHTML = "";
+  DATA.groups.forEach((g, i) => box.appendChild(chip(g.name, i === S.group && !$("sq").value, () => { $("sq").value = ""; S.group = i; renderStyles(); renderTabs(); })));
+}
+function currentStyle() {
+  const same = s => s.vals.every((v, k) => Math.abs(v - S.bands[k]) < 0.05);
+  const named = STYLES.find(s => s.name === S.style && same(s));
+  if (named) return named;
+  const grp = DATA.groups[S.group].name;
+  return STYLES.find(s => same(s) && s.group === grp) || STYLES.find(same) || null;
+}
+function renderStyles() {
+  const q = $("sq").value.trim().toLowerCase(), box = $("styles"), cur = currentStyle();
+  const list = q ? STYLES.filter(s => s.name.toLowerCase().includes(q) || s.plain.toLowerCase().includes(q))
+                 : STYLES.filter(s => s.group === DATA.groups[S.group].name);
+  box.innerHTML = "";
+  for (const s of list) {
+    const b = chip(s.name, s === cur, () => { S.bands = s.vals.slice(); S.style = s.name; update(); });
+    b.onmouseenter = () => showInfo(s);
+    b.onmouseleave = () => showInfo(currentStyle());
+    box.appendChild(b);
+  }
+  if (!list.length) box.innerHTML = '<div class="hint">找不到，換個字試試（例：搖滾、人聲、低音）</div>';
+  showInfo(cur);
+}
+function showInfo(s) {
+  $("iname").textContent = s ? s.name : "自訂調音";
+  $("iplain").textContent = s ? s.plain + (s.width || s.cf || s.room ? "（聲場寬度、交叉饋送、殘響只有電腦版有，這裡套用音色部分）" : "")
+                              : "跟內建風格都不一樣";
+}
+function renderBands() {
+  const box = $("bands");
+  if (!box.children.length) {
+    DATA.bands.forEach((b, i) => {
+      const row = document.createElement("div");
+      row.className = "band";
+      row.innerHTML = `<div><b>${b.name}</b><small>${b.hint}</small></div>
+        <input type="range" min="-6" max="6" step="0.5" aria-label="${b.name}"><span></span>`;
+      row.querySelector("input").oninput = e => { S.bands[i] = +e.target.value; S.style = null; update(true); };
+      box.appendChild(row);
+    });
+  }
+  [...box.children].forEach((row, i) => {
+    const v = S.bands[i];
+    row.querySelector("input").value = v;
+    row.querySelector("span").textContent = v ? (v > 0 ? "+" : "") + v.toFixed(1) + " dB" : "0 dB";
+  });
+}
+function drawCurve() {
+  const cv = $("cv"), dpr = window.devicePixelRatio || 1, Wd = cv.clientWidth, Hd = cv.clientHeight;
+  cv.width = Wd * dpr; cv.height = Hd * dpr;
+  const g = cv.getContext("2d");
+  g.scale(dpr, dpr);
+  const L = 30, R = 6, T = 6, B = 18, w = Wd - L - R, h = Hd - T - B;
+  const x = f => L + w * Math.log10(f / 20) / 3, y = db => T + h * (12 - Math.max(-12, Math.min(12, db))) / 24;
+  g.font = "11px system-ui"; g.fillStyle = "#8C7461"; g.strokeStyle = "#EFE2D3"; g.lineWidth = 1;
+  for (const db of [-12, -6, 0, 6, 12]) { g.beginPath(); g.moveTo(L, y(db)); g.lineTo(L + w, y(db)); g.stroke(); g.fillText((db > 0 ? "+" : "") + db, 2, y(db) + 4); }
+  [[100, "100"], [1000, "1k"], [10000, "10k"]].forEach(([f, t]) => { g.beginPath(); g.moveTo(x(f), T); g.lineTo(x(f), T + h); g.stroke(); g.fillText(t, x(f) - 8, Hd - 3); });
+  const total = holding ? FREQS.map(() => 0) : curve(allFilters()), sc = curve(styleFilters(S.bands));
+  g.beginPath(); g.moveTo(x(FREQS[0]), y(0));
+  FREQS.forEach((f, i) => g.lineTo(x(f), y(total[i])));
+  g.lineTo(x(FREQS[199]), y(0)); g.closePath(); g.fillStyle = "#FCE8D8"; g.fill();
+  if (!holding && sc.some(v => v)) {
+    g.setLineDash([5, 4]); g.strokeStyle = "#8A5A36"; g.lineWidth = 1.5; g.beginPath();
+    FREQS.forEach((f, i) => i ? g.lineTo(x(f), y(sc[i])) : g.moveTo(x(f), y(sc[i]))); g.stroke(); g.setLineDash([]);
+  }
+  g.strokeStyle = holding ? "#8C7461" : "#D9692B"; g.lineWidth = 2.5; g.beginPath();
+  FREQS.forEach((f, i) => i ? g.lineTo(x(f), y(total[i])) : g.moveTo(x(f), y(total[i]))); g.stroke();
+}
+
+// ---------------------------------------------------------------- 試聽（Web Audio，跟電腦版一樣預留音量）
+let ctx = null, pre = null, src = null, nodes = [];
+function ensureAudio() {
+  if (ctx) return;
+  ctx = new (window.AudioContext || window.webkitAudioContext)();
+  src = ctx.createMediaElementSource($("au"));
+  pre = ctx.createGain();
+  src.connect(pre);
+  rebuildAudio();
+}
+function rebuildAudio() {
+  if (!ctx) return;
+  pre.disconnect(); nodes.forEach(n => n.disconnect());
+  const fl = allFilters(), peak = Math.max(0, ...curve(fl));
+  nodes = (holding ? [] : fl).map(([t, fc, gain, q]) => {
+    const b = ctx.createBiquadFilter();
+    b.type = t === "PK" ? "peaking" : t === "LSC" ? "lowshelf" : "highshelf";
+    b.frequency.value = fc; b.gain.value = gain;
+    if (t === "PK") b.Q.value = q;
+    return b;
+  });
+  pre.gain.value = Math.pow(10, -Math.ceil(peak * 2) / 2 / 20);   // 按住聽原音時也一樣小聲，公平比較
+  let last = pre;
+  for (const n of nodes) { last.connect(n); last = n; }
+  last.connect(ctx.destination);
+}
+
+// ---------------------------------------------------------------- 匯出：把整條曲線擬合成指定段數的參數等化
+function fitPEQ(T, n) {
+  const err = m => m.reduce((s, v, i) => s + W[i] * (T[i] - v) ** 2, 0);
+  const shape = (t, fc, q) => FREQS.map(f => filterDb(t, fc, 1, q, f));
+  const lsGain = (R, s) => { let a = 0, b = 0; for (let i = 0; i < R.length; i++) { a += W[i] * R[i] * s[i]; b += W[i] * s[i] * s[i]; } return b > 1e-9 ? Math.max(-12, Math.min(12, a / b)) : 0; };
+  const fl = [];
+  let model = FREQS.map(() => 0);
+  for (let k = 0; k < n; k++) {
+    const R = T.map((v, i) => v - model[i]);
+    const idx = [...R.keys()].sort((a, b) => W[b] * Math.abs(R[b]) - W[a] * Math.abs(R[a]));
+    const centers = [];
+    for (const i of idx) { if (centers.every(c => Math.abs(Math.log(FREQS[c] / FREQS[i])) > 0.35)) centers.push(i); if (centers.length >= 4) break; }
+    const cands = [["LSC", 105, 0.7], ["HSC", 10000, 0.7]];
+    for (const i of centers) for (const q of [0.5, 0.7, 1, 1.4, 2, 3, 4.5]) cands.push(["PK", Math.round(FREQS[i]), q]);
+    let best = null;
+    for (const [t, fc, q] of cands) {
+      const g = lsGain(R, shape(t, fc, q));
+      if (!g) continue;
+      const m2 = model.map((v, i) => v + filterDb(t, fc, g, q, FREQS[i])), e = err(m2);
+      if (!best || e < best.e) best = {e, f: [t, fc, g, q], m: m2};
+    }
+    if (!best || best.e >= err(model) - 1e-6) break;
+    fl.push(best.f); model = best.m;
+  }
+  for (let pass = 0; pass < 3; pass++) fl.forEach((f, j) => {        // 逐一重算每段的增益
+    const others = curve(fl.filter((_, k) => k !== j)), R = T.map((v, i) => v - others[i]);
+    f[2] = lsGain(R, shape(f[0], f[1], f[3]));
+  });
+  model = curve(fl);
+  const rms = Math.sqrt(err(model) / W.reduce((a, b) => a + b, 0));
+  return {fl, rms};
+}
+function renderExport() {
+  const n = +$("nb").value, target = curve(allFilters());
+  let fl, rms = 0;
+  if (!n) fl = allFilters().map(f => f.slice());
+  else ({fl, rms} = fitPEQ(target, n));
+  fl = fl.map(([t, fc, g, q]) => [t, Math.round(fc), Math.round(g * 10) / 10, Math.round(q * 100) / 100]).filter(f => f[2]);
+  const peak = Math.max(0, ...curve(fl)), preamp = -Math.ceil(peak * 10) / 10;
+  const names = {LSC: "低頻架式", HSC: "高頻架式", PK: "峰值"};
+  $("ftab").innerHTML = "<tr><th>#</th><th>類型</th><th>頻率 Hz</th><th>增益 dB</th><th>Q</th></tr>" +
+    fl.map((f, i) => `<tr><td>${i + 1}</td><td>${names[f[0]]}（${f[0]}）</td><td>${f[1]}</td><td>${f[2] > 0 ? "+" : ""}${f[2].toFixed(1)}</td><td>${f[3].toFixed(2)}</td></tr>`).join("") +
+    `<tr><td colspan="3">預留音量（Preamp）</td><td>${preamp.toFixed(1)}</td><td></td></tr>`;
+  $("peq").value = `Preamp: ${preamp.toFixed(1)} dB\n` + fl.map((f, i) => `Filter ${i + 1}: ON ${f[0]} Fc ${f[1]} Hz Gain ${f[2].toFixed(1)} dB Q ${f[3].toFixed(2)}`).join("\n");
+  $("fitmsg").innerHTML = !n ? `原始 ${fl.length} 段（完全一樣）` : `${fl.length} 段，平均誤差 <span class="${rms < 1 ? "ok" : "bad"}">${rms.toFixed(1)} dB</span>`;
+}
+function graphicEQ() {
+  const fs = Array.from({length: 127}, (_, i) => 20 * Math.pow(1000, i / 126)), fl = allFilters();
+  const gs = fs.map(f => fl.reduce((s, x) => s + filterDb(x[0], x[1], x[2], x[3], f), 0)), top = Math.max(0, ...gs);
+  return "GraphicEQ: " + fs.map((f, i) => `${Math.round(f)} ${(gs[i] - top).toFixed(1)}`).join("; ");
+}
+async function copyText(t, btn) {
+  try { await navigator.clipboard.writeText(t); } catch (e) { const a = $("peq"); a.select(); document.execCommand("copy"); }
+  const old = btn.textContent; btn.textContent = "已複製 ✓"; setTimeout(() => btn.textContent = old, 1400);
+}
+
+// ---------------------------------------------------------------- 更新
+let exportJob = null;
+function update(fromSlider) {
+  renderBases(); renderBands(); renderTabs(); renderStyles(); drawCurve(); rebuildAudio(); save();
+  clearTimeout(exportJob); exportJob = setTimeout(renderExport, fromSlider ? 250 : 0);
+}
+
+async function main() {
+  DATA = await (await fetch("data.json")).json();
+  DATA.groups.forEach(g => g.styles.forEach(s => STYLES.push(Object.assign({group: g.name}, s))));
+  load();
+  if (!STYLES.length) return;
+  let t = null;
+  $("hpq").addEventListener("input", () => { clearTimeout(t); t = setTimeout(searchHp, 200); });
+  $("hpq").addEventListener("focus", () => loadIndex().catch(() => {}), {once: true});
+  $("sq").addEventListener("input", () => { renderTabs(); renderStyles(); });
+  $("zero").onclick = () => { S.bands = [0, 0, 0, 0, 0]; S.style = null; update(); };
+  $("nb").onchange = renderExport;
+  $("copy").onclick = e => copyText($("peq").value, e.target);
+  $("copyg").onclick = e => copyText(graphicEQ(), e.target);
+  $("dl").onclick = () => {
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(new Blob([$("peq").value + "\n"], {type: "text/plain"}));
+    a.download = ((currentStyle() || {}).name || "我的調音").replace(/[\\/:*?"<>|]/g, "_") + " ParametricEQ.txt";
+    a.click();
+  };
+  $("file").onchange = e => { const f = e.target.files[0]; if (f) { $("au").src = URL.createObjectURL(f); } };
+  $("au").addEventListener("play", () => { ensureAudio(); ctx.resume(); });
+  const hold = on => { if (holding === on) return; holding = on; $("hold").classList.toggle("on", on); rebuildAudio(); drawCurve(); };
+  $("hold").addEventListener("pointerdown", e => { e.preventDefault(); hold(true); });
+  ["pointerup", "pointerleave", "pointercancel"].forEach(ev => $("hold").addEventListener(ev, () => hold(false)));
+  window.addEventListener("resize", drawCurve);
+  update();
+}
+main().catch(e => { document.querySelector(".wrap").insertAdjacentHTML("beforeend", `<p class="bad">載入失敗：${e}</p>`); });
+</script>
+</body>
+</html>
