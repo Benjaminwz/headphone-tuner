@@ -6,3 +6,6 @@ __pycache__/
 installer/build/
 installer/uv/
 installer/dist/
+android/build/
+android/release.keystore
+android/signing.txt

@@ -20,7 +20,19 @@
 - **快捷鍵**：Ctrl+Alt+E 開關 EQ、Ctrl+Alt+PgUp／PgDn 換風格（在其他程式裡也能用）
 - 暖色系介面；螢幕比較小（例如筆電 150% 縮放）會自動縮小，不會超出螢幕
 
-## 安裝
+## 手機版（Android）
+
+到 [Releases](../../releases) 下載 `HeadphoneTuner-Android-版本.apk`，在手機上打開安裝（第一次要允許「安裝未知應用程式」）。
+Android 10 以上。跟電腦版同一套風格、耳機校正（AutoEQ）、暖色介面、「按住聽原音」、搜尋、我的預設。
+
+- 用 Android 內建的 DynamicsProcessing 等化器（64 段）套到**整支手機**；有些手機不允許，會自動改成接上各個播放 App
+- 接 USB 解碼器、藍牙耳機都能用；開機自動恢復
+- 只調音色（耳機校正＋風格＋細調）；聲場寬度、交叉饋送、殘響是電腦版才有
+- Tidal 請不要打開「獨佔模式」「強制音量」這類讓外接解碼器直接輸出的選項，不然會繞過等化器
+
+自己建置：`python android/gen_data.py`（從電腦版匯出風格資料），再執行 `android/build_apk.ps1`（需要 JDK 17、Android SDK 35，不用 Gradle）。
+
+## 安裝（電腦版）
 
 需要 Windows 10／11 和 [Equalizer APO](https://sourceforge.net/projects/equalizerapo/)（免費的等化器核心，
 安裝時勾選你的耳機用的輸出裝置，裝完重新開機）。
