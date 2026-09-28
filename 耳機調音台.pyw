@@ -27,7 +27,12 @@ APP_DIR = os.path.dirname(os.path.abspath(__file__))
 SETTINGS_FILE = os.path.join(APP_DIR, "settings.json")
 ICON_PATH = os.path.join(APP_DIR, "tuner.ico")
 APP_ID = "HeadphoneTuner.Panel"  # 工作列用自己的圖示（不跟 Python 混在一起）
-OUT_NAME = "tuner_current.txt"
+ENUM_KEY = "{a45c254e-df1c-4efd-8020-67d146a850e0},24"  # 裝置的匯流排：BTHENUM＝藍牙立體聲、BTHHFENUM＝藍牙通話
+
+
+def out_name(guid):
+    """每個裝置各自的調音設定檔（config.txt 依裝置 Include 對應的檔案）"""
+    return f"tuner_{guid.strip('{}')[:8].lower()}.txt"
 HP_DIR = os.path.join(APP_DIR, "耳機資料")  # 耳機清單、下載的校正檔快取
 AUTOEQ_RAW = "https://raw.githubusercontent.com/jaakkopasanen/AutoEq/master/results/"
 APO_URL = "https://sourceforge.net/projects/equalizerapo/"
@@ -68,10 +73,13 @@ HELP = {
     "殘響空間": "加上房間的回音：錄音室（小、乾淨）或音樂廳（大、有殿堂感）。",
     "平衡測試音": "播放很小聲的粉紅噪音：按「中央」時聲音應該在正中間。",
     "位元深度": "每個取樣的精細度。24-bit 就很夠了。",
+    "音量優先": "藍牙耳機常常開到最大聲還是不夠大。打開後只預留「目前這組設定」需要的音量空間，會大聲不少；"
+               "代價是換風格時音量會跟著變（按住聽原音、開關 EQ 比較時音量仍然一樣）。",
     "取樣率（kHz）": "每秒取樣次數。CD 音源選 44.1 的倍數最單純；調更高沒有明顯差別。",
 }
 GUIDE = [
-    ("選耳機", "按上方「耳機：」，輸入型號（例：HD 600、XM5），點兩下。"),
+    ("選耳機", "按上方「耳機：」，輸入型號（例：HD 600、XM5），點兩下。藍牙耳機一連上，調音台會自動切過去，"
+               "第一次會請你選它的型號；每個裝置各自記住自己的耳機和調音。"),
     ("確認有接上", "右上角要顯示「EQ 已接上」。沒有的話按「點我接上」，勾選你的裝置後重新開機。"),
     ("挑風格", "在「快速風格」點一個，滑鼠移上去會有介紹。也可以在搜尋框打字找（例：搖滾、人聲、低音）。"),
     ("比較差別", "按住上方「按住聽原音」聽原本的聲音，放開就回來；空白鍵也能開關（音量不變）。"),
@@ -447,8 +455,15 @@ def list_devices():
                         hooked = hooked or APO_CLSID in str(val).upper()
             except OSError:
                 pass
+            try:
+                with winreg.OpenKey(root, guid + r"\Properties") as p:
+                    enum = str(winreg.QueryValueEx(p, ENUM_KEY)[0]).upper()
+            except OSError:
+                enum = ""
+            bt = (("handsfree" if enum.startswith("BTHHF") or "HANDS-FREE" in iface.upper() else "stereo")
+                  if enum.startswith("BTH") else None)
             out.append({"guid": guid, "name": f"{desc} ({iface})" if desc else iface, "iface": iface, "desc": desc,
-                        "active": active, "hooked": hooked, "fmt": fmt})
+                        "active": active, "hooked": hooked, "fmt": fmt, "bt": bt})
     return out
 
 
@@ -460,12 +475,14 @@ def work_area():
     return None
 
 
-def default_device_guid():
-    """Windows 目前的預設輸出裝置"""
+def default_device_guid(strict=False):
+    """Windows 目前的預設輸出裝置（strict＝讀不到就回傳 None，不用猜的）"""
     try:
         from pycaw.pycaw import AudioUtilities
         return AudioUtilities.GetSpeakers().id.rsplit(".", 1)[-1]
     except Exception:
+        if strict:
+            return None
         devs = [d for d in list_devices() if d["active"]]
         return devs[0]["guid"] if devs else None
 
@@ -491,10 +508,12 @@ def remove_config(cfg_dir):
     new_text = text[:text.index(BLOCK_BEGIN)] + "\n".join(lines)
     with open(path, "w", encoding="utf-8", newline="\r\n") as fh:
         fh.write(new_text)
-    try:
-        os.remove(os.path.join(cfg_dir, OUT_NAME))
-    except OSError:
-        pass
+    for fn in os.listdir(cfg_dir):
+        if fn.startswith("tuner_") and fn.endswith(".txt"):
+            try:
+                os.remove(os.path.join(cfg_dir, fn))
+            except OSError:
+                pass
     return True
 
 
@@ -508,15 +527,16 @@ def read_text(path):
     return raw.decode("utf-8", "replace")
 
 
-def ensure_config(cfg_dir, dev, all_guids):
-    """config.txt 開頭放一個只給選定裝置的區塊（Include 調音台的設定檔）。
-    原本的設定改成只套用在其他裝置（區段寫了這個裝置的代號、名稱或 all 的，把它排除），
+def ensure_config(cfg_dir, devs, all_guids):
+    """config.txt 開頭放調音台的區塊：每個用過的裝置各一段，Include 它自己的設定檔
+    （藍牙耳機連上時 Equalizer APO 自動用它那段，調音台沒開也一樣）。
+    原本的設定改成只套用在其他裝置（區段寫了這些裝置的代號、名稱或 all 的，把它們排除），
     才不會在同一個裝置上疊兩次。第一次改之前會先備份。回傳 True＝有改動"""
     path = os.path.join(cfg_dir, "config.txt")
     text = read_text(path).replace("\r\n", "\n") if os.path.exists(path) else ""
-    guid = dev["guid"]
-    others = [g for g in all_guids if g.lower() != guid.lower()] or [DUMMY_GUID]
-    names = [n.lower() for n in (dev["iface"], dev["desc"], dev["name"]) if n]
+    mine = {d["guid"].lower() for d in devs}
+    others = [g for g in all_guids if g.lower() not in mine] or [DUMMY_GUID]
+    names = [n.lower() for d in devs for n in (d["iface"], d["desc"], d["name"]) if n]
     if BLOCK_BEGIN in text and BLOCK_END in text:
         rest = text[text.index(BLOCK_END) + len(BLOCK_END):].lstrip("\r\n")
     else:
@@ -537,14 +557,19 @@ def ensure_config(cfg_dir, dev, all_guids):
             for p in pats:
                 if p.lower() == "all":
                     new += others
-                elif p.lower() == guid.lower() or any(p.lower() in n for n in names):
+                elif p.lower() in mine or any(p.lower() in n for n in names):
                     continue
                 else:
                     new.append(p)
             if new != pats:
                 ln = "Device: " + "; ".join(new or [DUMMY_GUID])
         lines.append(ln)
-    block = f"{BLOCK_BEGIN}\nDevice: {guid}\nInclude: {OUT_NAME}\n{BLOCK_END}\n"
+    block = BLOCK_BEGIN + "\n" + "".join(f"# {d['name']}\nDevice: {d['guid']}\nInclude: {out_name(d['guid'])}\n"
+                                          for d in devs) + BLOCK_END + "\n"
+    try:  # 舊版只有一個裝置時用的檔名
+        os.remove(os.path.join(cfg_dir, "tuner_current.txt"))
+    except OSError:
+        pass
     new_text = block + "\n".join(lines) + ("\n" if lines else "")
     if new_text == text:
         return False
@@ -920,7 +945,7 @@ def _analyze_tidal():
     return mine, plain
 
 
-def build_config(filters, width=0, crossfeed=0, balance=0.0, reverb_file="", room_db=None, extra=0.0):
+def build_config(filters, width=0, crossfeed=0, balance=0.0, reverb_file="", room_db=None, extra=0.0, headroom=None):
     """產生設定檔內容，回傳 (內容, 最高加強 dB)。音量固定降 HEADROOM，EQ 關閉時也一樣。
     width＝聲場加寬百分比、crossfeed＝交叉饋送等級、balance＝左右平衡（正＝偏右）"""
     k = width / 100
@@ -928,7 +953,7 @@ def build_config(filters, width=0, crossfeed=0, balance=0.0, reverb_file="", roo
     if room_db:  # 殘響的最壞增益疊上去
         eq = [a + b for a, b in zip(eq, room_db)]
     peak = max(eq) + 20 * math.log10(1 + k)
-    lines = ["# written by headphone tuner", f"Preamp: {-(HEADROOM + extra):.1f} dB"]
+    lines = ["# written by headphone tuner", f"Preamp: {-((HEADROOM if headroom is None else headroom) + extra):.1f} dB"]
     lines += [f"Filter: ON {t} Fc {fc:g} Hz Gain {g:.1f} dB Q {q:.2f}" for t, fc, g, q in filters]
     if crossfeed:  # 轉成中(M)/側(S) → 只把低頻的側訊號變小 → 低頻互相滲一點過去，像聽喇叭
         _name, gain, fc = CROSSFEED[crossfeed]
@@ -1167,12 +1192,18 @@ class App:
         self.scale = root.winfo_fpixels("1i") / 96
         self.cfg_dir = CONFIG_DIR or apo_config_dir()
         s = load_settings()
-        last = s.get("last", {})
         self.presets = s.get("presets", {})
-        self.hp = s.get("headphone")  # {"name", "sources": [[來源, 濾波器], ...]}
+        # 每個輸出裝置各自記住：耳機、調音、音量優先 → {裝置代號: {"headphone", "last", "loud"}}
+        self.profiles = s.get("profiles") or {}
+        self.dev_guid = s.get("device") or default_device_guid()
+        prof = self.profiles.get(self.dev_guid or "", {})
+        last = prof.get("last", s.get("last", {}))  # 舊版設定檔沒有 profiles：沿用
+        self.hp = prof.get("headphone", s.get("headphone"))  # {"name", "sources": [[來源, 濾波器], ...]}
         set_headphone(self.hp)
         update_headroom()
-        self.dev_guid = s.get("device") or default_device_guid()
+        dev = find_device(self.dev_guid)
+        self.loud = tk.BooleanVar(value=prof.get("loud", bool(dev and dev["bt"] == "stereo")))
+        self.follow = tk.BooleanVar(value=s.get("follow", True))
         self._perm_asked = False
         self.enabled = tk.BooleanVar(value=last.get("enabled", True))
         self.base = tk.StringVar(value=last.get("base") if last.get("base") in BASES else default_base())
@@ -1230,14 +1261,17 @@ class App:
             return
         self.setup_config()
         if not self.hp:
-            self.choose_headphone()
+            dev = find_device(self.dev_guid)
+            self.choose_headphone(dev["iface"] if dev and dev["bt"] else "")
 
     def setup_config(self):
         dev = find_device(self.dev_guid)
         if not dev:
             return
+        allds = list_devices()
+        keep = {g.lower() for g in self.profiles} | {dev["guid"].lower()}
         try:
-            if ensure_config(self.cfg_dir, dev, [d["guid"] for d in list_devices()]):
+            if ensure_config(self.cfg_dir, [d for d in allds if d["guid"].lower() in keep], [d["guid"] for d in allds]):
                 self.toast(f"已設定：{dev['name']}")
             self.changed()
         except PermissionError:
@@ -1343,6 +1377,7 @@ class App:
         c = self.card(left, "基本設定")
         self.toggle_row(c, "開啟 EQ", "關掉＝原音比較，音量不變", self.enabled, self.changed)
         self.toggle_row(c, "直通模式", "類似獨佔：完全不處理聲音", self.passthrough, self.toggle_passthrough)
+        self.toggle_row(c, "音量優先", "比較大聲，換風格音量會變（藍牙建議）", self.loud, self.changed)
         self.label(c, "耳機校正（AutoEQ 量測，目標 Harman 2018）", 8, SUB).pack(anchor="w", pady=(px(8), px(2)))
         grid = tk.Frame(c, bg=PANEL)
         grid.pack(fill="x")
@@ -1495,7 +1530,8 @@ class App:
         cut = lambda t, n: t if len(t) <= n else t[:n - 1] + "…"
         self.hp_btn.config(text="耳機：" + cut((self.hp or {}).get("name") or "還沒選（點我選）", 30))
         dev = find_device(self.dev_guid)
-        self.devsel_btn.config(text="輸出：" + cut(dev["name"] if dev else "還沒選（點我選）", 30))
+        name = ("藍牙 · " + dev["iface"]) if dev and dev["bt"] else (dev["name"] if dev else "還沒選（點我選）")
+        self.devsel_btn.config(text="輸出：" + cut(name, 30))
 
     # ---------- 選耳機、選裝置 ----------
     def dialog(self, title, hint):
@@ -1507,11 +1543,13 @@ class App:
         self.label(win, hint, 10, SUB, justify="left").pack(anchor="w", padx=px(16), pady=(px(12), px(6)))
         return win
 
-    def choose_headphone(self):
+    def choose_headphone(self, query=""):
         px = self.px
-        win = self.dialog("選擇耳機", "輸入耳機型號（例：HD 600、XM5、AirPods Max），資料來自 AutoEQ 資料庫")
+        win = self.dialog("選擇耳機", "輸入耳機型號（例：HD 600、XM5、AirPods Max），資料來自 AutoEQ 資料庫。\n"
+                                    "無線耳機有「ANC on／off」兩種量測的，選你平常用的模式。")
         entry = tk.Entry(win, font=(FONT, 12), relief="flat", bg=PILL, fg=TEXT, insertbackground=TEXT)
         entry.pack(fill="x", padx=px(16), ipady=px(4))
+        entry.insert(0, query)
         box = tk.Listbox(win, font=(FONT, 10), height=14, width=56, relief="flat", bg=PANEL, fg=TEXT,
                          selectbackground=ACCENT, selectforeground="white", highlightthickness=1,
                          highlightbackground=LINE, activestyle="none")
@@ -1584,24 +1622,69 @@ class App:
 
     def choose_device(self):
         px = self.px
-        win = self.dialog("選擇輸出裝置", "選你的耳機插在哪個裝置（解碼器、耳擴、音效卡）。\n標「已接上」的才會經過 Equalizer APO。")
-        devs = sorted((d for d in list_devices() if d["active"]), key=lambda d: (not d["hooked"], d["name"]))
+        win = self.dialog("選擇輸出裝置", "選你的耳機接在哪個裝置（解碼器、耳擴、音效卡、藍牙耳機）。\n"
+                                        "每個裝置會各自記住它的耳機和調音。")
+        devs = sorted((d for d in list_devices() if d["active"]),
+                      key=lambda d: (d["bt"] == "handsfree", not d["hooked"], d["name"]))
+
+        def pick(d):
+            if d["bt"] == "handsfree" and not messagebox.askyesno(
+                    "藍牙通話模式", "這是藍牙耳機的「通話模式」：單聲道、音質很差，只有在講電話時才會用到。\n\n"
+                                "聽音樂請選同一副耳機的另一個（立體聲）項目。確定還是要選這個嗎？", parent=win):
+                return
+            win.destroy()
+            self.set_device(d)
+
         for d in devs:
-            tag = "已接上" if d["hooked"] else "還沒接上"
-            p = Pill(win, self, f"{d['name']}　（{tag}）", lambda d=d: (self.set_device(d), win.destroy()), size=10)
+            tags = (["藍牙"] if d["bt"] == "stereo" else ["藍牙通話模式：單聲道、音質差"] if d["bt"] else [])
+            tags.append("EQ 已接上" if d["hooked"] else "EQ 還沒接上")
+            p = Pill(win, self, f"{d['name']}　（{'・'.join(tags)}）", lambda d=d: pick(d), size=10)
             p.set_selected(d["guid"].lower() == (self.dev_guid or "").lower())
             p.pack(fill="x", padx=px(16), pady=px(3))
         if not devs:
             self.label(win, "沒有偵測到任何輸出裝置", 10, ORANGE).pack(padx=px(16))
-        tk.Frame(win, bg=PANEL, height=px(12)).pack()
+        row = tk.Frame(win, bg=PANEL)
+        row.pack(fill="x", padx=px(16), pady=(px(12), px(14)))
+        Toggle(row, self, self.follow, self.save_settings).pack(side="right", padx=(px(12), 0))
+        self.label(row, "自動跟著 Windows 目前的輸出切換", 10, bold=True).pack(anchor="w")
+        self.label(row, "例如藍牙耳機一連上，調音台就切到它、用它自己的設定", 8, SUB).pack(anchor="w")
 
-    def set_device(self, dev):
+    def load_profile(self, p):
+        """換到某個裝置：載入它記住的耳機、調音、音量優先"""
+        self.hp = p.get("headphone")
+        self._base_curves.clear()
+        set_headphone(self.hp)
+        update_headroom()
+        self.build_base_pills()
+        last = p.get("last", {})
+        self.enabled.set(last.get("enabled", True))
+        self.passthrough.set(last.get("passthrough", False))
+        self.loud.set(p.get("loud", False))
+        self.apply_snap(last)
+
+    def set_device(self, dev, auto=False):
+        if dev["guid"].lower() == (self.dev_guid or "").lower():
+            return
+        self.save_settings()  # 先把目前裝置的設定記起來
         self.dev_guid = dev["guid"]
+        p = self.profiles.get(self.dev_guid)
+        if p:
+            self.load_profile(p)
+        else:  # 第一次用的裝置：沿用目前的耳機和調音；藍牙預設音量優先
+            self.loud.set(dev["bt"] == "stereo")
+        self.hist.clear()
+        self.fut.clear()
+        self._last_snap = None
+        self.pend_fmt = None
         self.paint_header()
         if os.path.isdir(self.cfg_dir):
             self.setup_config()
+        self.changed()
         self.save_settings()
-        if not dev["hooked"]:
+        self.toast(("自動切換到：" if auto else "輸出：") + dev["name"])
+        if p is None and dev["bt"]:
+            self.choose_headphone(dev["iface"])  # 新的藍牙耳機：用它的名字幫你先搜尋型號
+        elif not dev["hooked"] and not auto:
             self.open_selector()
 
     def toggle_row(self, parent, title, sub, var, command):
@@ -1866,18 +1949,33 @@ class App:
 
     # ---------- 每 2 秒更新：裝置、輸出格式、播放資訊 ----------
     def tick(self):
+        hf = False
+        if self.follow.get() and not getattr(self, "_holding", False):
+            g = default_device_guid(strict=True)
+            if g and g.lower() != (self.dev_guid or "").lower():
+                d = find_device(g)
+                if d and d["active"]:
+                    if d["bt"] == "handsfree":
+                        hf = True  # 講電話中：不切過去，只提示
+                    else:
+                        self.set_device(d, auto=True)
         dev = find_device(self.dev_guid)
-        self.refresh_device(dev)
+        self.refresh_device(dev, hf)
         self.refresh_format(dev)
         self.refresh_playback(dev)
         self.root.after(2000, self.tick)
 
-    def refresh_device(self, dev):
+    def refresh_device(self, dev, hf=False):
+        if hf:
+            self.dev_chip.config(text="● 藍牙通話模式中：單聲道、音質差（掛斷就恢復）", fg=ORANGE, bg=ORANGE_BG)
+            self.fix_btn.pack_forget()
+            return
         if dev and dev["hooked"] and dev["active"]:
             self.dev_chip.config(text="● EQ 已接上", fg=GREEN, bg=GREEN_BG)
             self.fix_btn.pack_forget()
             return
-        text = ("● EQ 還沒接上這個裝置" if dev["active"] else "● 裝置沒插上") if dev else "● 還沒選輸出裝置"
+        text = (("● EQ 還沒接上這個裝置" if dev["active"] else "● 藍牙耳機沒連線" if dev["bt"] else "● 裝置沒插上")
+                if dev else "● 還沒選輸出裝置")
         dev = dev if dev and dev["active"] and not dev["hooked"] else None
         self.dev_chip.config(text=text, fg=ORANGE, bg=ORANGE_BG)
         if dev and not self.fix_btn.winfo_ismapped():
@@ -1889,9 +1987,12 @@ class App:
         ctypes.windll.shell32.ShellExecuteW(None, "runas", os.path.join(apo, "DeviceSelector.exe"), None, apo, 1)
         dev = find_device(self.dev_guid)
         name = dev["iface"] if dev else "你的輸出裝置"
-        messagebox.showinfo("接上 EQ", f"在跳出的視窗勾選「{name}」→ 按確定，\n然後重新開機就完成了。", parent=self.root)
+        tip = ("\n\n藍牙耳機裝了還是沒效果的話：在同一個視窗勾選「Troubleshooting options」，\n"
+               "選「Install as SFX/EFX (experimental)」，按確定再重新開機。" if dev and dev["bt"] else "")
+        messagebox.showinfo("接上 EQ", f"在跳出的視窗勾選「{name}」→ 按確定，\n然後重新開機就完成了。" + tip, parent=self.root)
 
     def refresh_format(self, dev):
+        self.cur_bt = bool(dev and dev["bt"])
         cur = parse_fmt(dev["fmt"]) if dev and dev["active"] else None
         self.cur_fmt = cur[:2] if cur else None
         if self.cur_fmt and int(self.room.get()) and self.cur_fmt[1] != getattr(self, "_ir_rate", None):
@@ -1907,6 +2008,11 @@ class App:
         self.paint_format()
 
     def paint_format(self):
+        if getattr(self, "cur_bt", False):
+            for p in list(self.depth_pills.values()) + list(self.rate_pills.values()):
+                p.set_selected(False)
+            self.fmt_lbl.config(text="藍牙：格式由藍牙編碼決定，這裡不能改")
+            return
         if not self.cur_fmt:
             self.fmt_lbl.config(text="沒偵測到 DAC")
             return
@@ -1924,6 +2030,10 @@ class App:
 
     def apply_format(self):
         dev = find_device(self.dev_guid)
+        if dev and dev["bt"]:
+            messagebox.showinfo("輸出解析度", "藍牙耳機的音質由藍牙編碼（SBC、AAC、aptX…）決定，\n"
+                                "Windows 會自動挑，這裡不能改。", parent=self.root)
+            return
         if not dev or not dev["active"] or not self.pend_fmt:
             messagebox.showinfo("輸出解析度", "沒偵測到插著的輸出裝置。", parent=self.root)
             return
@@ -2136,13 +2246,18 @@ class App:
                 except Exception as e:  # 沒有 numpy 或寫不進去
                     note = f"（殘響做不出來：{e}）"
         args = (base + style, self.width.get(), int(self.crossfeed.get()), self.balance.get(), reverb_file, room_db)
-        # 殘響才自動多降（用實際算出的最壞增益）；EQ 關掉時也用同一個音量，A/B 比較才公平
-        extra = max(0.0, build_config(*args)[1] - HEADROOM) if reverb_file else 0.0
-        text, peak = build_config(*args, extra) if on else build_config([], extra=extra)
+        # 固定預留：殘響才自動多降（用實際算出的最壞增益）。音量優先：只預留目前設定需要的。
+        # 兩種都一樣：EQ 關掉時用同一個音量，A/B 比較才公平
+        need = build_config(*args)[1]
+        if self.loud.get():
+            hr, extra = max(0.0, math.ceil(need * 2) / 2), 0.0
+        else:
+            hr, extra = HEADROOM, (max(0.0, need - HEADROOM) if reverb_file else 0.0)
+        text, peak = build_config(*args, extra, headroom=hr) if on else build_config([], extra=extra, headroom=hr)
         if through:  # 不寫 Preamp、不寫任何濾波器 → 訊號原封不動
             text = "# written by headphone tuner\n# passthrough: no processing\n"
         try:
-            with open(os.path.join(self.cfg_dir, OUT_NAME), "w", encoding="ascii") as fh:
+            with open(os.path.join(self.cfg_dir, out_name(self.dev_guid or DUMMY_GUID)), "w", encoding="ascii") as fh:
                 fh.write(text)
             try:
                 os.utime(os.path.join(self.cfg_dir, "config.txt"))  # 提醒 Equalizer APO 重新讀取
@@ -2150,11 +2265,12 @@ class App:
                 pass
             if through:
                 self.status.config(text="✓ 直通模式：訊號完全不處理（EQ、聲場、固定降音量都暫停）", fg=GREEN)
-            elif peak > HEADROOM + extra + 0.05:
-                self.status.config(text=f"⚠ 已套用，但最高加強 +{peak:.1f} dB 超過預留的 {HEADROOM:g} dB，"
+            elif peak > hr + extra + 0.05:
+                self.status.config(text=f"⚠ 已套用，但最高加強 +{peak:.1f} dB 超過預留的 {hr:g} dB，"
                                         "很大聲的段落可能破音（把加強的滑桿調少一點）", fg=ORANGE)
             else:
-                msg = (f"✓ 已套用　殘響開啟：整體多降 {extra:.1f} dB 防破音（開關 EQ 音量仍一樣）" if extra else
+                msg = (f"✓ 已套用　音量優先：只預留 {hr:g} dB（換風格音量會變，開關 EQ 音量一樣）" if self.loud.get() else
+                       f"✓ 已套用　殘響開啟：整體多降 {extra:.1f} dB 防破音（開關 EQ 音量仍一樣）" if extra else
                        "✓ 已套用　音量固定，切換設定、開關 EQ 音量都一樣　（關掉視窗 EQ 仍然有效）")
                 self.status.config(text=msg + note, fg=ORANGE if note else GREEN)
         except PermissionError:
@@ -2240,7 +2356,9 @@ class App:
                 "balance": self.balance.get(), "room": int(self.room.get())}
 
     def save_settings(self):
-        data = {"last": self.snapshot(), "presets": self.presets, "headphone": self.hp, "device": self.dev_guid}
+        if self.dev_guid:
+            self.profiles[self.dev_guid] = {"headphone": self.hp, "last": self.snapshot(), "loud": self.loud.get()}
+        data = {"presets": self.presets, "device": self.dev_guid, "follow": self.follow.get(), "profiles": self.profiles}
         try:
             with open(SETTINGS_FILE, "w", encoding="utf-8") as fh:
                 json.dump(data, fh, ensure_ascii=False, indent=1)
