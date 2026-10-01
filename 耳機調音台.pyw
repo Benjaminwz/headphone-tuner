@@ -40,6 +40,7 @@ APO_URL = "https://sourceforge.net/projects/equalizerapo/"
 BLOCK_BEGIN = "# ==== 耳機調音台：自動管理的區塊，請勿修改 ===="
 BLOCK_END = "# ==== 耳機調音台區塊結束 ===="
 DUMMY_GUID = "{00000000-0000-0000-0000-000000000000}"
+ORIG_MARK = "# 原本的設定（調音台讓它只套用在其他裝置）"
 APO_CLSID = "EACD2258"
 MM = r"SOFTWARE\Microsoft\Windows\CurrentVersion\MMDevices\Audio\Render"
 NAME_KEY = "{b3f8fa53-0004-438e-9003-51a46e139bfc},6"  # 介面名稱（例：TOPPING USB DAC）
@@ -505,8 +506,9 @@ def remove_config(cfg_dir):
         return False
     rest = text[text.index(BLOCK_END) + len(BLOCK_END):].lstrip("\n")
     lines = rest.split("\n")
-    if lines and lines[0].startswith("# 原本的設定（調音台讓它只套用在其他裝置）"):
-        lines = lines[2:] if len(lines) > 1 and lines[1].lower().startswith("device:") else lines[1:]
+    i = next((k for k, ln in enumerate(lines) if ln.startswith(ORIG_MARK)), -1)
+    if i >= 0:  # 調音台加的「只套用其他裝置」拿掉 → 原本的設定恢復成套用全部
+        del lines[i:i + (2 if i + 1 < len(lines) and lines[i + 1].lower().startswith("device:") else 1)]
     new_text = text[:text.index(BLOCK_BEGIN)] + "\n".join(lines)
     with open(path, "w", encoding="utf-8", newline="\r\n") as fh:
         fh.write(new_text)
@@ -540,16 +542,18 @@ def ensure_config(cfg_dir, devs, all_guids):
     others = [g for g in all_guids if g.lower() not in mine] or [DUMMY_GUID]
     names = [n.lower() for d in devs for n in (d["iface"], d["desc"], d["name"]) if n]
     if BLOCK_BEGIN in text and BLOCK_END in text:
-        rest = text[text.index(BLOCK_END) + len(BLOCK_END):].lstrip("\r\n")
+        # 區塊前面如果有東西（例如其他調音程式後來加的）也要留著，不能直接丟掉
+        b, e = text.index(BLOCK_BEGIN), text.index(BLOCK_END) + len(BLOCK_END)
+        rest = (text[:b].rstrip("\n") + "\n" + text[e:].lstrip("\n")).lstrip("\n")
     else:
         backup = os.path.join(cfg_dir, "config_調音台之前的備份.txt")
         if text and not os.path.exists(backup):
             with open(backup, "w", encoding="utf-8") as fh:
                 fh.write(text)
         rest = text
-        first = next((ln.strip() for ln in rest.splitlines() if ln.strip() and not ln.strip().startswith("#")), "")
-        if first and not first.lower().startswith("device:"):  # 原本沒分裝置的設定＝套用全部 → 改成只套用其他裝置
-            rest = "# 原本的設定（調音台讓它只套用在其他裝置）\nDevice: " + "; ".join(others) + "\n" + rest
+    first = next((ln.strip() for ln in rest.splitlines() if ln.strip() and not ln.strip().startswith("#")), "")
+    if first and not first.lower().startswith("device:"):  # 沒分裝置的設定＝套用全部 → 改成只套用其他裝置
+        rest = ORIG_MARK + "\nDevice: " + "; ".join(others) + "\n" + rest
     lines = []
     for ln in rest.splitlines():
         st = ln.strip()
@@ -578,6 +582,39 @@ def ensure_config(cfg_dir, devs, all_guids):
     with open(path, "w", encoding="utf-8", newline="\r\n") as fh:
         fh.write(new_text)
     return True
+
+
+def device_hit(pattern, dev):
+    """Equalizer APO 的 Device: 規則：all，或裝置名稱／種類／代號裡包含這段文字（不分大小寫）"""
+    p = pattern.strip().lower()
+    return bool(p) and (p == "all" or any(p in n.lower() for n in (dev["guid"], dev["iface"], dev["desc"]) if n))
+
+
+def config_problem(cfg_dir, dev):
+    """照 Equalizer APO 的規則算「這個裝置實際會套用哪些設定」：
+    其他程式改過 config.txt 時，可能變成沒套用調音台、或被調兩次，但 Windows 那邊看起來一切正常"""
+    try:
+        text = read_text(os.path.join(cfg_dir, "config.txt")).replace("\r\n", "\n")
+    except OSError:
+        return "讀不到 Equalizer APO 的設定檔"
+    selected, ours, foreign = True, False, False  # 第一個 Device: 之前的指令套用到所有裝置
+    for ln in text.split("\n"):
+        st = ln.strip()
+        if not st or st.startswith("#"):
+            continue
+        cmd, _sep, arg = st.partition(":")
+        cmd = cmd.strip().lower()
+        if cmd == "device":
+            selected = any(device_hit(p, dev) for p in arg.split(";"))
+        elif selected and cmd == "include" and arg.strip().lower() == out_name(dev["guid"]).lower():
+            ours = True
+        elif selected and cmd != "channel":
+            foreign = True
+    if not ours:
+        return "設定檔被其他程式改過：這個裝置沒套用調音台"
+    if foreign:
+        return "設定檔被其他程式改過：這個裝置被調了兩次"
+    return None
 
 
 def parse_fmt(fmt):
@@ -690,6 +727,9 @@ def read_tidal_status():
     mode = re.findall(r"Mode \[\s*(\w+)\s*\]", text)
     if mode:
         info["mode"] = mode[-1]
+    out_dev = re.findall(r"Device id \[\s*\{[\d.]+\}\.(\{[0-9A-Fa-f-]+\})\s*\]", text)
+    if out_dev:  # Tidal 實際輸出到哪個裝置
+        info["dev"] = out_dev[-1].lower()
     # 位元率：Tidal 開頭先連抓幾段存著，之後每播完一段（1 MB）才抓下一段，
     # 所以「兩次抓取的間隔」＝播完這段花的時間 → 換算成正在播放那段的實際位元率
     start = text.rfind("BufferStream::setSize:")
@@ -1217,6 +1257,7 @@ class App:
         self.loud = tk.BooleanVar(value=prof.get("loud", bool(dev and dev["bt"] == "stereo")))
         self.follow = tk.BooleanVar(value=s.get("follow", True))
         self._perm_asked = False
+        self.eq_problem = None  # 每 2 秒在 refresh_device 更新
         self.enabled = tk.BooleanVar(value=last.get("enabled", True))
         self.base = tk.StringVar(value=last.get("base") if last.get("base") in BASES else default_base())
         self.bands = [tk.DoubleVar(value=v) for v in (last.get("bands") or [0] * len(BANDS))]
@@ -1982,16 +2023,44 @@ class App:
             self.dev_chip.config(text="● 藍牙通話模式中：單聲道、音質差（掛斷就恢復）", fg=ORANGE, bg=ORANGE_BG)
             self.fix_btn.pack_forget()
             return
+        self.eq_problem = None
         if dev and dev["hooked"] and dev["active"]:
-            self.dev_chip.config(text="● EQ 已接上", fg=GREEN, bg=GREEN_BG)
-            self.fix_btn.pack_forget()
-            return
-        text = (("● EQ 還沒接上這個裝置" if dev["active"] else "● 藍牙耳機沒連線" if dev["bt"] else "● 裝置沒插上")
-                if dev else "● 還沒選輸出裝置")
-        dev = dev if dev and dev["active"] and not dev["hooked"] else None
+            self.eq_problem = config_problem(self.cfg_dir, dev)
+            if not self.eq_problem:
+                self.dev_chip.config(text="● EQ 已接上", fg=GREEN, bg=GREEN_BG)
+                self.fix_btn.pack_forget()
+                return
+            text, btn, cmd = f"● {self.eq_problem}", "一鍵修復", self.repair_config
+        else:
+            self.eq_problem = "EQ 沒接上"
+            text = (("● EQ 還沒接上這個裝置" if dev["active"] else "● 藍牙耳機沒連線" if dev["bt"] else "● 裝置沒插上")
+                    if dev else "● 還沒選輸出裝置")
+            btn, cmd = "點我接上", self.open_selector
+            dev = dev if dev and dev["active"] and not dev["hooked"] else None
         self.dev_chip.config(text=text, fg=ORANGE, bg=ORANGE_BG)
+        self.fix_btn.config(text=btn)
+        self.fix_btn.command = cmd
         if dev and not self.fix_btn.winfo_ismapped():
             self.fix_btn.pack(side="right")
+
+    def repair_config(self):
+        if not messagebox.askokcancel("修復設定檔", f"{self.eq_problem}。\n\n通常是其他等化器程式（或另一個調音台）改了 Equalizer APO 的設定。\n"
+                                      "要讓這個裝置重新只套用調音台嗎？\n（其他程式的設定會保留，只是不再套用到這個裝置）",
+                                      parent=self.root):
+            return
+        self.setup_config()
+        self.refresh_device(find_device(self.dev_guid))
+        self.toast("已修復" if not self.eq_problem else "還是有問題，請到 GitHub 回報")
+
+    def eq_mode(self):
+        """播放資訊列最右邊的狀態：EQ 真的有在作用才顯示綠色"""
+        if self.passthrough.get():
+            return "共用模式 · 直通（不處理）", SUB, PILL
+        if not self.enabled.get():
+            return "共用模式 · EQ 關閉（原音）", SUB, PILL
+        if self.eq_problem:
+            return "共用模式 · EQ 沒套用", ORANGE, ORANGE_BG
+        return "共用模式 · EQ 有效", GREEN, GREEN_BG
 
     def open_selector(self):
         apo = os.path.dirname(self.cfg_dir)
@@ -2081,7 +2150,7 @@ class App:
             put("rate", "")
             ch["arrow"].config(text="→", fg=SUB, bg=BG)
             put("dac", f"DAC {dac[0]}-bit / {fmt_rate(dac[1])}" if dac else "")
-            put("mode", "共用模式 · EQ 有效", GREEN, GREEN_BG)
+            put("mode", *self.eq_mode())
             return
         if "src" not in info:
             put("state", "還沒偵測到播放（播一首歌就會顯示）", SUB)
@@ -2106,13 +2175,18 @@ class App:
         put("rate", txt + (f" · 平均 {avg:.0f}" if avg else ""))
         ch["arrow"].config(text="→", fg=SUB, bg=BG)
         out = info.get("out")
-        if out and (info.get("mode") == "exclusive"
-                    or (info.get("mode") is None and dac and out[1] == rate and out[1] != dac[1])):
+        if dev and info.get("dev") and info["dev"] != dev["guid"].lower():
+            # Tidal 輸出到別的裝置（例如 Tidal 設定裡指定了別的裝置）：聲音沒經過調音台正在調的這個裝置
+            other_dev = find_device(info["dev"])
+            put("dac", "")
+            put("mode", f"Tidal 輸出到「{other_dev['iface'] if other_dev else '別的裝置'}」· 這個裝置的 EQ 沒套用到", ORANGE, ORANGE_BG)
+        elif out and (info.get("mode") == "exclusive"
+                      or (info.get("mode") is None and dac and out[1] == rate and out[1] != dac[1])):
             put("dac", f"DAC {out[0]}-bit / {fmt_rate(out[1])}")
             put("mode", "獨佔模式 · EQ 不會生效", ORANGE, ORANGE_BG)
         elif dac:
             put("dac", f"DAC {dac[0]}-bit / {fmt_rate(dac[1])}")
-            put("mode", "共用模式 · EQ 有效", GREEN, GREEN_BG)
+            put("mode", *self.eq_mode())
         else:
             put("dac", "")
             put("mode", "")
@@ -2466,6 +2540,14 @@ if __name__ == "__main__":
         sys.exit(0)
     if "--config-dir" in sys.argv:  # 測試用：改寫別的資料夾，不動真正的音效設定
         CONFIG_DIR = sys.argv[sys.argv.index("--config-dir") + 1]
+    else:  # 只能開一個：兩個同時開會互相蓋掉設定 → 已經開著就把那個叫到前面
+        _single = ctypes.windll.kernel32.CreateMutexW(None, False, "HeadphoneTuner_SingleInstance")
+        if ctypes.windll.kernel32.GetLastError() == 183:  # ERROR_ALREADY_EXISTS
+            _hwnd = ctypes.windll.user32.FindWindowW(None, "耳機調音台")
+            if _hwnd:
+                ctypes.windll.user32.ShowWindow(_hwnd, 9)  # SW_RESTORE
+                ctypes.windll.user32.SetForegroundWindow(_hwnd)
+            sys.exit(0)
     try:
         ctypes.windll.shcore.SetProcessDpiAwareness(1)
     except (AttributeError, OSError):
