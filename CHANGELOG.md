@@ -5,7 +5,7 @@
 ## [未發佈]
 
 ### 新增
-- README 重新整理：版本比較表、快速開始、常見問題、建置說明
+- README 重寫：平台比較、安裝、運作方式、限制、目錄與建置
 - `CONTRIBUTING.md`、Issue 範本、PR 範本
 - `tools/check.py` 與 GitHub Actions：自動檢查程式能編譯、資料檔格式正確、網頁版與手機版資料一致
 

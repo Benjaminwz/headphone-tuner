@@ -1,21 +1,16 @@
 ---
-name: 回報問題 Bug report
-about: 軟體沒有照預期運作
+name: Bug report
+about: 行為不符預期
 labels: bug
 ---
 
-**發生了什麼事？**
+**現象**
 
 **重現步驟**
-1.
-2.
 
-**預期的結果**
+**預期**
 
 **環境**
-- 版本（電腦版／Android／網頁版）：
+- 平台（Windows / Android / Web）與版本：
 - 調音台版本：
-- Windows／Android 版本：
-- 耳機型號、輸出裝置（藍牙／USB 解碼器／音效卡）：
-
-**截圖（選填）**
+- 耳機型號與輸出裝置：

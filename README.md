@@ -1,130 +1,130 @@
-<div align="center">
+# 耳機調音台（Headphone Tuner）
 
-<img src="docs/icon-192.png" width="96" alt="耳機調音台">
+用 [Equalizer APO](https://sourceforge.net/projects/equalizerapo/) 做系統層級耳機等化的前端。
+耳機的頻率響應校正取自 [AutoEQ](https://github.com/jaakkopasanen/AutoEq)，目標曲線是 Harman 2018；
+校正之上疊五個細調頻段和一組有出處的風格預設。介面是繁體中文。
 
-# 耳機調音台 · Headphone Tuner
+另有兩個移植版：Android（`DynamicsProcessing`）和網頁版（匯出參數等化）。
 
-**任何耳機，一鍵校正到 Harman 目標，再挑一個合你胃口的聲音。**
-整台電腦的聲音都有效，繁體中文介面，免費、不用註冊。
+![web](docs/img/web-preview.png)
 
-[![Release](https://img.shields.io/github/v/release/Benjaminwz/headphone-tuner?color=d96a2b&label=%E6%9C%80%E6%96%B0%E7%89%88%E6%9C%AC)](../../releases/latest)
-[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-[![Platform](https://img.shields.io/badge/platform-Windows%20%C2%B7%20Android%20%C2%B7%20Web-lightgrey)](#選擇你的版本)
-[![Check](https://github.com/Benjaminwz/headphone-tuner/actions/workflows/check.yml/badge.svg)](../../actions/workflows/check.yml)
+網頁版畫面。桌面版與 Android 版用同一套資料（`docs/data.json`）和配色。
 
-[⬇️ 下載](../../releases/latest) · [🌐 網頁版](https://benjaminwz.github.io/headphone-tuner/) · [📖 使用說明](說明.txt) · [📝 更新紀錄](CHANGELOG.md)
+## 平台
 
-</div>
-
----
-
-## 選擇你的版本
-
-| | 電腦版（Windows） | 手機版（Android） | 網頁版（iPhone / iPad / 任何瀏覽器） |
+| | Windows | Android | Web |
 | --- | --- | --- | --- |
-| **作用範圍** | 整台電腦的聲音 | 整支手機（或接上各個播放 App） | 匯出給解碼器／耳擴，或用自己的音樂檔試聽 |
-| **耳機校正（AutoEQ）** | ✅ 6000 多款 | ✅ | ✅ |
-| **50 多種風格、細調、按住聽原音** | ✅ | ✅ | ✅ |
-| **聲場寬度、交叉饋送、殘響** | ✅ | — | — |
-| **藍牙耳機自動切換、快捷鍵、你的歌單** | ✅ | 藍牙／USB 解碼器可用 | — |
-| **取得方式** | [安裝精靈](../../releases/latest) | [APK](../../releases/latest) | [直接開啟](https://benjaminwz.github.io/headphone-tuner/) |
+| 作用範圍 | 系統所有輸出 | 整機，或個別播放 App | 匯出設定；瀏覽器內試聽 |
+| AutoEQ 校正 | 有 | 有 | 有 |
+| 風格、細調、A/B | 有 | 有 | 有 |
+| 聲場寬度、交叉饋送、殘響 | 有 | 無 | 無 |
+| 取得 | [Releases](../../releases/latest) | [Releases](../../releases/latest) | https://benjaminwz.github.io/headphone-tuner/ |
 
-<div align="center">
-<img src="docs/img/web-preview.png" width="760" alt="網頁版畫面">
-<br><sub>網頁版畫面（電腦版與手機版是同一套暖色系設計）</sub>
-</div>
+## 安裝（Windows 10/11）
 
-## 特色
+1. 安裝 Equalizer APO，在最後的 Configurator 勾選你要用的輸出裝置，重新開機。
+2. 從 [Releases](../../releases/latest) 執行 `HeadphoneTuner-Setup-<版本>.exe`。
+   安裝程式會在自己的資料夾放一份 Python，不使用系統的，也不需要管理員權限。
+   解除安裝時還原 Equalizer APO 的 `config.txt`。
+3. 開啟後選耳機。右上角顯示「EQ 已接上」才表示聲音有經過調音。
 
-- **任何耳機**：輸入型號搜尋，自動從 [AutoEQ](https://github.com/jaakkopasanen/AutoEq) 下載校正（6000 多款，最多 3 份不同單位的量測，可選平均）；資料庫沒量過的型號（例：Sony MDR-XB400）用同系列兄弟機推估
-- **風格都有根據，不靠感覺**：Harman 聆聽研究、ISO 226 等響曲線、ANSI S3.5 語音清晰度、bs2b 交叉饋送、Beranek 音樂廳殘響、旗艦／熱門耳機的量測反推（HD 800 S、Susvara、大奧、AirPods Max、Sony XM5…）
-- **藍牙耳機**：每個輸出裝置各自記住自己的耳機和調音；藍牙耳機一連上，Windows 切過去，調音台也自動跟著切（調音台沒開也照樣套用它自己的設定）。藍牙預設「音量優先」，不會太小聲；通話模式、還沒接上 EQ 都會提示怎麼處理
-- **音量固定**：自動預留音量空間，切換風格、開關 EQ 音量都一樣，比較音質才公平，也不會破音
-- **空間感**：聲場寬度、交叉饋送（像聽喇叭）、錄音室／音樂廳殘響、左右平衡＋測試音
-- **輸出解析度**：直接切換送給解碼器的位元深度、取樣率
-- **你的歌單**：有用 Tidal 的話，會分析你的收藏（只在本機讀），替特別大聲、特別小聲、容易爆音、有損音質的歌各做一個設定
-- **好上手**：按住「按住聽原音」立刻比較差別、搜尋框打字找風格、看不懂的名稱滑鼠移上去就有白話說明、調壞了按「上一步」（Ctrl+Z）、右上角「怎麼用」六步驟教學
-- **匯出給手機**：把耳機校正＋細調存成 AutoEQ 的 GraphicEQ 格式，手機的等化器 App 也能用同一組聲音
-- **快捷鍵**：Ctrl+Alt+E 開關 EQ、Ctrl+Alt+PgUp／PgDn 換風格（在其他程式裡也能用）
-- **暖色系介面**；螢幕比較小（例如筆電 150% 縮放）會自動縮小，不會超出螢幕
+不想用安裝程式：下載 `headphone-tuner-<版本>.zip`，需要自備 Python 3 與 tkinter，執行 `安裝.bat`。
+疑難排解與手動還原見 [說明.txt](說明.txt)。
 
-## 快速開始（Windows）
+Android 版需要 Android 10 以上；第一次安裝要允許未知來源。
 
-1. 安裝 [Equalizer APO](https://sourceforge.net/projects/equalizerapo/)（免費的等化器核心）。安裝最後勾選你的耳機用的輸出裝置，裝完**重新開機**。
-2. 到 [Releases](../../releases/latest) 下載 `HeadphoneTuner-Setup-版本.exe`，一直按下一步。
-   不用先裝 Python（會自動下載調音台專用的一份，不影響電腦裡其他程式），也不用系統管理員權限。
-3. 第一次打開會請你選耳機：輸入型號，點兩下就好。右上角顯示「EQ 已接上」就代表聲音有經過調音。
+## 運作方式
 
-> 要求：Windows 10／11。解除安裝時會把 Equalizer APO 的設定恢復原狀。
+### 訊號鏈
 
-**免安裝版**：下載 `headphone-tuner-版本.zip`，解壓縮後雙擊「安裝.bat」（需要先裝 [Python](https://www.python.org/downloads/)）。
-詳細說明、移除方法請看 [說明.txt](說明.txt)。
+```
+音源 → [Preamp] → [AutoEQ 校正 + 細調 + 風格] → [交叉饋送] → [聲場寬度] → [平衡] → [殘響] → 輸出
+```
 
-## 手機版（Android）
+調音台本身不處理音訊，只產生 Equalizer APO 的設定檔。改動會即時寫入，所以關掉視窗後聲音仍然有效。
 
-到 [Releases](../../releases/latest) 下載 `HeadphoneTuner-Android-版本.apk`，在手機上打開安裝（第一次要允許「安裝未知應用程式」）。Android 10 以上。
+### 設定檔
 
-- 用 Android 內建的 DynamicsProcessing 等化器（64 段）套到**整支手機**；有些手機不允許，會自動改成接上各個播放 App
-- 接 USB 解碼器、藍牙耳機都能用；開機自動恢復
-- 只調音色（耳機校正＋風格＋細調）；聲場寬度、交叉饋送、殘響是電腦版才有
-- Tidal 請不要打開「獨佔模式」「強制音量」這類讓外接解碼器直接輸出的選項，不然會繞過等化器
+`config.txt` 開頭由調音台管理一個區塊（以標記包起來），每個用過的輸出裝置各有一段
+`Device: <guid>` + `Include: tuner_<guid 前 8 碼>.txt`。原本的 `config.txt` 第一次修改前會備份成
+`config_調音台之前的備份.txt`，原有的設定會被改成只套用在其他裝置，避免同一個裝置疊兩次。
+藍牙耳機連上時由 Equalizer APO 依裝置代號自己選段，不需要調音台在執行。
 
-## 網頁版（iPhone、iPad、任何瀏覽器）
+### 校正
 
-**打開：https://benjaminwz.github.io/headphone-tuner/**（Safari 按「分享 → 加入主畫面」就像 App 一樣）
+`耳機資料/` 快取 AutoEQ 的量測（oratory1990、crinacle、Rtings、Innerfidelity、Super Review、Headphone.com Legacy）。
+每副耳機最多取三份；多份平均的做法是把各份濾波器的增益除以份數後疊在一起。
+AutoEQ 沒有的型號（`ESTIMATED`）用同系列機種的量測推估，預設改用平均。
 
-iPhone 不允許任何 App 改其他 App（例如 Tidal）的聲音，所以網頁版是：同一套耳機校正＋風格＋細調，
-**匯出成參數等化（5／8／10／15 段，自動擬合）給有內建等化器的解碼器／耳擴**（聲音在解碼器裡處理，iPhone 上的 Tidal 也有效），
-另外可以**用自己的音樂檔直接試聽**（含按住聽原音）。資料只存在你的瀏覽器裡。
+### 風格
 
-## 常見問題
+風格是「目標曲線 − Harman 2018」的差，用 Gauss-Newton 擬合到五個二階濾波器：
 
-<details>
-<summary><b>為什麼開啟後音量比較小？</b></summary>
+| 頻段 | 類型 | 頻率 | Q |
+| --- | --- | --- | --- |
+| 低頻 | LSC | 105 Hz | 0.7 |
+| 厚度 | PK | 250 Hz | 1.0 |
+| 人聲 | PK | 1.5 kHz | 1.0 |
+| 臨場感 | PK | 3.5 kHz | 1.2 |
+| 高頻 | HSC | 10 kHz | 0.7 |
 
-為了切換任何風格都不會破音，調音台會固定預留一段音量空間（依你的耳機自動算，大多 8–12 dB），
-所以整體會小一點，把音量轉大一點就好。好處是切換風格、開關 EQ 時音量都一樣，比較音質才公平。
-</details>
+增益取 0.5 dB 的倍數，低頻上限 +6 dB。每個風格的依據（研究、標準或量測）寫在 `耳機調音台.pyw` 的資料表旁邊。
+`filter_db()` 用的是 Equalizer APO 的 biquad 公式，所以畫面上的曲線與實際輸出一致。
 
-<details>
-<summary><b>右上角顯示「還沒接上」怎麼辦？</b></summary>
+### 音量空間
 
-按旁邊的按鈕，在跳出的視窗勾選你的輸出裝置 → 確定 → 重新開機。
-</details>
+Preamp 固定為 `-(HEADROOM + extra)`。`HEADROOM` 由 `update_headroom()` 算出：
+目前耳機的每一種校正與每個內建風格組合起來的最大正增益，進位到 0.5 dB，限制在 6–18 dB。
+因此切換風格或開關 EQ 時音量不變，A/B 比較才公平，也不會削波。
 
-<details>
-<summary><b>藍牙耳機沒有效果？</b></summary>
+### 空間處理
 
-在 Equalizer APO 的設定視窗勾選「Troubleshooting options」，選「Install as SFX/EFX (experimental)」，按確定後重新開機。
-藍牙的音質（SBC、AAC、aptX…）由 Windows 自動決定，所以「輸出解析度」對藍牙不能用。
-</details>
+- 交叉饋送：中／側轉換後只衰減低頻側訊號，參數取 bs2b 的三組標準值（Meier、Chu Moy、bs2b 預設）。
+- 聲場寬度：`L' = (1+k)L − kR`，`R'` 對稱。
+- 殘響：依 DAC 目前取樣率產生脈衝響應檔，以 `Convolution:` 載入。錄音室取 ITU-R BS.1116 的條件；
+  音樂廳的 RT60 約 2 s（Beranek），中段座位直達聲／殘響比少 3 dB。
 
-<details>
-<summary><b>找不到我的耳機型號？</b></summary>
+### 輸出格式
 
-可以按「找不到，先不校正」，風格一樣能用。也歡迎[開 Issue](../../issues/new/choose) 告訴我型號。
-</details>
+位元深度與取樣率透過 `IPolicyConfig` 設定，不需要管理員權限。藍牙裝置的格式由 Windows 決定，這個選項對它無效。
 
-<details>
-<summary><b>怎麼移除、還原？</b></summary>
+### Android 與網頁
 
-用安裝精靈裝的：Windows「設定 → 應用程式」解除安裝「耳機調音台」，會自動還原 Equalizer APO 的設定。
-免安裝版的作法見 [說明.txt](說明.txt)。
-</details>
+Android 版把同一條曲線取樣成 64 段 `DynamicsProcessing` 前置等化，加輸入增益（預留音量）與限幅器。
+網頁版把曲線擬合成 5、8、10 或 15 段參數等化供匯出（給有內建 PEQ 的 DAC／耳擴），
+並用 Web Audio 的 `BiquadFilter` 讓人用自己的檔案試聽。資料只存在瀏覽器的 localStorage。
 
-## 自己建置
+## 限制
 
-| 目標 | 指令 |
-| --- | --- |
-| 電腦版直接執行 | `python 耳機調音台.pyw`（`--config-dir <資料夾>` 可寫到別的設定資料夾測試，不會動到真正的音效設定） |
-| 安裝精靈 | `python installer/build.py v1.2.3`（需要 Inno Setup 6，加 `--test` 做測試用安裝檔） |
-| Android APK | `python android/gen_data.py`（從電腦版匯出風格資料），再執行 `android/build_apk.ps1`（需要 JDK 17、Android SDK 35，不用 Gradle） |
-| 檢查（CI 同款） | `python tools/check.py` |
+- 只有 Windows 版能處理系統聲音。iOS 不允許 App 修改其他 App 的輸出，網頁版因此只能匯出。
+- 依賴 Equalizer APO；沒有在它的 Configurator 勾選的輸出裝置不會有效果。
+- 藍牙若沒有效果，在 Equalizer APO Configurator 的 Troubleshooting options 改用 SFX/EFX 安裝方式。
+- 藍牙耳機在通話模式（HFP，單聲道）下是另一個裝置，選裝置時要選立體聲那個。
+- Tidal 歌單分析只讀本機的 Tidal 快取，不上傳；沒有安裝 Tidal 就不會出現。
 
-電腦版改了風格之後，重跑 `android/gen_data.py` 並把 `android/assets/data.json` 複製為 `docs/data.json`，手機版和網頁版就會跟著更新。
-貢獻方式請看 [CONTRIBUTING.md](CONTRIBUTING.md)。
+## 目錄
 
-## 授權與致謝
+```
+耳機調音台.pyw       桌面版（Python、tkinter，單一檔案）
+安裝.bat / 說明.txt   免安裝版入口與說明
+installer/           Inno Setup 腳本與 build.py（打包安裝程式與 zip）
+android/             Android 版（aapt2、javac、d8 直接建置，不用 Gradle）；gen_data.py 從桌面版匯出資料
+docs/                網頁版（GitHub Pages）；data.json 與 android/assets/data.json 必須相同
+tools/check.py       CI 檢查
+```
 
-MIT，詳見 [LICENSE](LICENSE)。耳機校正資料來自 [AutoEQ](https://github.com/jaakkopasanen/AutoEq)（MIT），
-等化器核心是 [Equalizer APO](https://sourceforge.net/projects/equalizerapo/)。
+## 建置
+
+```
+python 耳機調音台.pyw [--config-dir <資料夾>]     # --config-dir 寫到別處，不動系統音效設定
+python installer/build.py v1.2.3 [--test]         # 需要 Inno Setup 6
+python android/gen_data.py
+powershell -ExecutionPolicy Bypass -File android\build_apk.ps1 -VersionCode 1 -VersionName 1.4.0   # 需要 JDK 17、Android SDK 35
+python tools/check.py
+```
+
+桌面版改了風格資料之後，重跑 `android/gen_data.py` 並把 `android/assets/data.json` 複製到 `docs/data.json`。
+
+## 授權
+
+MIT。AutoEQ 資料同為 MIT。變更紀錄見 [CHANGELOG.md](CHANGELOG.md)，貢獻方式見 [CONTRIBUTING.md](CONTRIBUTING.md)。
