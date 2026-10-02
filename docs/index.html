@@ -373,6 +373,8 @@ function drawCurve() {
 }
 
 // ---------------------------------------------------------------- 試聽（Web Audio，跟電腦版一樣預留音量）
+// 只看穩態加強會低估：EQ 改變各頻率的相位，滿格母帶的波峰會疊高（用 Equalizer APO 實測，95% 的組合在 2.1 dB 內）→ 多留 2 dB
+const OVERSHOOT = 2.0;
 let ctx = null, pre = null, src = null, nodes = [];
 function ensureAudio() {
   if (ctx) return;
@@ -393,7 +395,7 @@ function rebuildAudio() {
     if (t === "PK") b.Q.value = q;
     return b;
   });
-  pre.gain.value = Math.pow(10, -Math.ceil(peak * 2) / 2 / 20);   // 按住聽原音時也一樣小聲，公平比較
+  pre.gain.value = Math.pow(10, -(Math.ceil(peak * 2) / 2 + OVERSHOOT) / 20);   // 按住聽原音時也一樣小聲，公平比較
   let last = pre;
   for (const n of nodes) { last.connect(n); last = n; }
   last.connect(ctx.destination);
@@ -437,7 +439,7 @@ function renderExport() {
   if (!n) fl = allFilters().map(f => f.slice());
   else ({fl, rms} = fitPEQ(target, n));
   fl = fl.map(([t, fc, g, q]) => [t, Math.round(fc), Math.round(g * 10) / 10, Math.round(q * 100) / 100]).filter(f => f[2]);
-  const peak = Math.max(0, ...curve(fl)), preamp = -Math.ceil(peak * 10) / 10;
+  const peak = Math.max(0, ...curve(fl)), preamp = -Math.ceil((peak + OVERSHOOT) * 10) / 10;  // 解碼器裡面也會破音
   const names = {LSC: "低頻架式", HSC: "高頻架式", PK: "峰值"};
   $("ftab").innerHTML = "<tr><th>#</th><th>類型</th><th>頻率 Hz</th><th>增益 dB</th><th>Q</th></tr>" +
     fl.map((f, i) => `<tr><td>${i + 1}</td><td>${names[f[0]]}（${f[0]}）</td><td>${f[1]}</td><td>${f[2] > 0 ? "+" : ""}${f[2].toFixed(1)}</td><td>${f[3].toFixed(2)}</td></tr>`).join("") +

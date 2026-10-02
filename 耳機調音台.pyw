@@ -14,6 +14,7 @@ import re
 import struct
 import sys
 import threading
+import time
 import tkinter as tk
 import tkinter.font as tkfont
 import urllib.parse
@@ -331,70 +332,196 @@ ROOMS = [("關", 0, 0, 0, 0, 0, ""),
          ("音樂廳中段", 2.0, 1.2, 0.75, 20, 3, "hall_mid")]    # 往後坐：直達/殘響比少 3 dB（約遠 1.4 倍，Zahorik 2002）
 
 
-def room_file(cfg_dir, room, rate):
-    """殘響檔（Equalizer APO 不會自動轉取樣率，所以依 DAC 目前取樣率做一份）；已經有就直接用"""
-    _n, rt, br, tr, itdg, drr, key = ROOMS[room]
-    name = f"reverb_{key}_v2_{rate}.wav"  # v2：兩耳相關性照真實聲場
-    path = os.path.join(cfg_dir, name)
-    if os.path.exists(path):
-        return name
+REVERB_RATES = (44100, 48000, 88200, 96000, 176400, 192000)  # 這些取樣率都先做好殘響檔（調音台沒開時裝置換取樣率也有殘響）
+
+
+def room_ir(room, rate):
+    """殘響的脈衝響應，4 聲道：0＝左→左、1＝右→右、2＝左→右、3＝右→左。
+    真實房間裡，左邊樂器的殘響兩耳都聽得到（擴散聲場兩耳能量相同），所以每個聲源各有一對兩耳的尾巴；
+    兩耳相關性照真實擴散聲場 sin(kd)/kd（Lindevald & Benade，耳距約 18 cm）→ 低頻兩耳幾乎一樣、約 1 kHz 以上各自獨立。
+    每條尾巴能量各一半 → 置中的聲音直達/殘響比跟設定一樣，偏一邊的聲音殘響也不會只出現在同一耳"""
     import numpy as np
+    _n, rt, br, tr, itdg, drr, _key = ROOMS[room]
     n = int(rate * (itdg / 1000 + rt * max(br, 1) * 1.05))
     t = np.arange(n) / rate
     freqs = np.fft.rfftfreq(n, 1 / rate)
     rng = np.random.default_rng(7)  # 固定種子：每次做出來都一樣
     start = int(rate * itdg / 1000)
-    # 兩耳相關性照真實擴散聲場（Lindevald & Benade）：sin(kd)/kd，耳距約 18 cm
-    # → 低頻兩耳幾乎一樣（不會左右亂飄、變碎），約 1 kHz 以上才各自獨立（聲場寬、包圍感）
-    common, left, right = (np.fft.rfft(rng.standard_normal(n)) for _ in range(3))
     coh = np.clip(np.sinc(2 * freqs * 0.18 / 343), 0, 1)
-    specs = (np.sqrt(coh) * common + np.sqrt(1 - coh) * left, np.sqrt(coh) * common + np.sqrt(1 - coh) * right)
     # 殘響慢慢長出來（不是一開始就滿），避免跟原音疊出梳狀的顆粒感
     onset = 1 - np.exp(-np.maximum(t - itdg / 1000, 0) / max(rt * 0.01, 0.002))
-    ir = np.zeros((n, 2))
-    for ch, spec in enumerate(specs):
-        tail = np.zeros(n)
-        # 各頻段衰減速度不同；8 kHz 以上再快一點（空氣吸收），殘響尾巴才不會沙沙的
-        for lo, hi, r in ((0, 500, rt * br), (500, 4000, rt), (4000, 8000, rt * tr), (8000, rate, rt * tr * 0.6)):
-            tail += np.fft.irfft(np.where((freqs >= lo) & (freqs < hi), spec, 0), n) * np.exp(-6.91 * t / r)
-        tail *= onset
-        tail[:start] = 0
-        tail *= math.sqrt(10 ** (-drr / 10) / (tail ** 2).sum())  # 依直達/殘響比調整殘響大小
-        ir[:, ch] = tail
-    ir[0, :] += 1.0  # 直達聲＝原音
-    data = ir.astype("<f4").tobytes()
-    head = (b"RIFF" + struct.pack("<I", 36 + len(data)) + b"WAVEfmt " +
-            struct.pack("<IHHIIHH", 16, 3, 2, rate, rate * 8, 8, 32) + b"data" + struct.pack("<I", len(data)))
-    for old in os.listdir(cfg_dir):  # 同一個空間其他取樣率的舊檔清掉
-        if old.startswith(f"reverb_{key}_") and old != name:
-            try:
-                os.remove(os.path.join(cfg_dir, old))
-            except OSError:
-                pass
-    with open(path, "wb") as fh:
-        fh.write(head + data)
+    ir = np.zeros((n, 4))
+    for src in (0, 1):  # 左邊的聲源、右邊的聲源
+        common, ipsi, contra = (np.fft.rfft(rng.standard_normal(n)) for _ in range(3))
+        for ch, own in ((src, ipsi), (2 + src, contra)):
+            spec = np.sqrt(coh) * common + np.sqrt(1 - coh) * own
+            tail = np.zeros(n)
+            # 各頻段衰減速度不同；8 kHz 以上再快一點（空氣吸收，ISO 9613-1），殘響尾巴才不會沙沙的
+            for lo, hi, r in ((0, 500, rt * br), (500, 4000, rt), (4000, 8000, rt * tr), (8000, rate, rt * tr * 0.6)):
+                tail += np.fft.irfft(np.where((freqs >= lo) & (freqs < hi), spec, 0), n) * np.exp(-6.91 * t / r)
+            tail *= onset
+            tail[:start] = 0
+            tail *= math.sqrt(0.5 * 10 ** (-drr / 10) / (tail ** 2).sum())  # 依直達/殘響比調整殘響大小
+            ir[:, ch] = tail
+    ir[0, :2] += 1.0  # 直達聲＝原音
+    return ir
+
+
+def room_name(room, rate):
+    return f"reverb_{ROOMS[room][6]}_v3_{rate}.wav"  # v3：左右兩耳都有殘響
+
+
+def room_file(cfg_dir, room, rate):
+    """殘響檔（Equalizer APO 不會自動轉取樣率，所以每個取樣率各一份）；已經有就直接用。
+    先寫暫存檔再改名：Equalizer APO 不會讀到寫一半的檔"""
+    name = room_name(room, rate)
+    path = os.path.join(cfg_dir, name)
+    if not os.path.exists(path):
+        data = room_ir(room, rate).astype("<f4").tobytes()
+        head = (b"RIFF" + struct.pack("<I", 36 + len(data)) + b"WAVEfmt " +
+                struct.pack("<IHHIIHH", 16, 3, 4, rate, rate * 16, 16, 32) + b"data" + struct.pack("<I", len(data)))
+        with open(path + ".tmp", "wb") as fh:
+            fh.write(head + data)
+        os.replace(path + ".tmp", path)
     return name
 
 
-_ROOM_GAIN = {}
+def write_atomic(path, text):
+    """先寫暫存檔再整個換掉：Equalizer APO 隨時可能讀，直接覆寫的話可能讀到空的或寫一半的設定
+    （那一瞬間沒有降音量、沒有 EQ → 爆一聲大聲）"""
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="ascii") as fh:
+        fh.write(text)
+    for _ in range(25):
+        try:
+            os.replace(tmp, path)
+            return
+        except PermissionError:  # Equalizer APO 剛好開著那個檔：等一下再換
+            time.sleep(0.02)
+    with open(path, "w", encoding="ascii") as fh:  # 一直換不掉才直接寫
+        fh.write(text)
+    os.remove(tmp)
 
 
-def room_gain(cfg_dir, name):
-    """殘響在各頻率的最大增益（dB，對應 FREQS）。長殘響的頻率響應有很多尖峰，
-    持續的音剛好落在尖峰上就會破音，所以防破音要用最壞的那個值"""
-    if name not in _ROOM_GAIN:
+def cleanup_reverb(cfg_dir, keep):
+    """刪掉用不到的殘響檔（Equalizer APO 還開著的刪不掉，下次再刪；背景正在寫的暫存檔不動）"""
+    for fn in os.listdir(cfg_dir):
+        if fn.endswith(".tmp") and time.time() - os.path.getmtime(os.path.join(cfg_dir, fn)) < 600:
+            continue
+        if fn.startswith("reverb_") and fn not in keep:
+            try:
+                os.remove(os.path.join(cfg_dir, fn))
+            except OSError:
+                pass
+
+
+def reverb_lines(files):
+    """files＝{取樣率: 殘響檔}。每個取樣率包在 If 裡：Equalizer APO 不會轉殘響檔的取樣率（對不上會整段跳過），
+    沒有對應檔案的取樣率就完全不動（不能只做一半，不然原音會被加到對面聲道）。
+    RVL／RVR 是原音的複本（虛擬聲道），做完摺積才加到對面聲道 → 左邊的聲音右耳也有殘響"""
+    out = []
+    for rate, name in sorted(files.items()):
+        out += [f"If: sampleRate == {rate}", "Copy: RVL=L RVR=R", "Channel: L R RVL RVR", f"Convolution: {name}",
+                "Channel: all", "Copy: L=L+RVR R=R+RVL", "EndIf:"]
+    return out
+
+
+# ---------------------------------------------------------------- 防破音：實際算輸出峰值
+# 只看穩態頻率響應（某個頻率最多加強多少）會低估：EQ 會改變各頻率的相位，滿格母帶的波峰會疊得更高
+# （用 Equalizer APO 實測：比穩態估計多 0.9 dB（中位數）、95% 在 2.1 dB 內、最多 2.9 dB）；
+# 聲場寬度在左右反相時加強 1+2k 倍，不是 1+k。→ 用幾種「滿格母帶」測試訊號實際算一次目前設定的輸出峰值
+SAFETY = 0.5     # 再多留 0.5 dB：測試訊號以外的歌、DAC 內部超取樣（樣本之間的波峰）
+OVERSHOOT = 2.0  # 固定預留用：穩態估計再加 2 dB（實測 95% 的組合夠；不夠的那組會自動再多降）
+_SIGNALS, _PEAKS, _IRS = [], {}, {}
+
+
+def _test_signals(np):
+    if not _SIGNALS:
+        rng, n = np.random.default_rng(11), 72000  # 48 kHz、1.5 秒
+        f = np.fft.rfftfreq(n, 1 / 48000)
+
+        def pink():
+            spec = np.fft.rfft(rng.standard_normal(n))
+            p = np.fft.irfft(spec / np.sqrt(np.maximum(np.arange(len(spec)), 1)), n)
+            return p / np.abs(p).max()
+
+        def low(x, fc):
+            y = np.fft.irfft(np.fft.rfft(x) / (1 + (f / fc) ** 2), n)
+            return y / np.abs(y).max()
+
+        for _ in range(2):  # 兩組獨立的：左右是不同樂器時用
+            p1, p2 = pink(), pink()
+            sigs = [np.tanh(p1 * 6), np.clip(p1 * 4, -1, 1), np.tanh(low(p1, 120) * 4), np.clip(low(p2, 80) * 3, -1, 1)]
+            _SIGNALS.append([s / np.abs(s).max() for s in sigs])
+    return _SIGNALS
+
+
+def _H(np, filters, f, fs=48000.0):
+    """濾波器串聯的複數頻率響應（跟 Equalizer APO 同一套公式；增益、Q 照設定檔的位數取整）"""
+    H = np.ones(len(f), dtype=complex)
+    z = np.exp(-2j * np.pi * f / fs)
+    for kind, fc, gain, q in filters:
+        gain, q = round(gain, 1), round(q, 2)
+        if not gain:
+            continue
+        A = 10 ** (gain / 40)
+        w0 = 2 * math.pi * fc / fs
+        c, al = math.cos(w0), math.sin(w0) / (2 * q)
+        if kind == "PK":
+            b, a = (1 + al * A, -2 * c, 1 - al * A), (1 + al / A, -2 * c, 1 - al / A)
+        else:
+            sq = 2 * math.sqrt(A) * al
+            if kind == "LSC":
+                b = (A * ((A + 1) - (A - 1) * c + sq), 2 * A * ((A - 1) - (A + 1) * c), A * ((A + 1) - (A - 1) * c - sq))
+                a = ((A + 1) + (A - 1) * c + sq, -2 * ((A - 1) + (A + 1) * c), (A + 1) + (A - 1) * c - sq)
+            else:
+                b = (A * ((A + 1) + (A - 1) * c + sq), -2 * A * ((A - 1) + (A + 1) * c), A * ((A + 1) + (A - 1) * c - sq))
+                a = ((A + 1) - (A - 1) * c + sq, 2 * ((A - 1) - (A + 1) * c), (A + 1) - (A - 1) * c - sq)
+        H *= (b[0] + b[1] * z + b[2] * z * z) / (a[0] + a[1] * z + a[2] * z * z)
+    return H
+
+
+def steady_peak(filters, width=0):
+    """穩態最大加強（dB）：寬度取左右反相時的最壞情況 1+2k（交叉饋送只讓左右互滲，不會加強）"""
+    return max(curve(filters) or [0.0]) + 20 * math.log10(1 + 2 * width / 100)
+
+
+def true_peak(filters, width=0, crossfeed=0, room=0):
+    """滿格母帶經過這組設定後的輸出峰值（dB，0＝跟輸入滿格一樣大）"""
+    key = (tuple(filters), width, crossfeed, room)
+    if key in _PEAKS:
+        return _PEAKS[key]
+    try:
         import numpy as np
-        raw = open(os.path.join(cfg_dir, name), "rb").read()
-        rate = struct.unpack("<I", raw[24:28])[0]
-        ir = np.frombuffer(raw[44:], "<f4").reshape(-1, 2)
-        freqs = np.fft.rfftfreq(len(ir), 1 / rate)
-        mag = np.maximum(np.abs(np.fft.rfft(ir[:, 0])), np.abs(np.fft.rfft(ir[:, 1])))
-        f = np.array(FREQS)
-        edges = np.concatenate(([f[0] / 1.02], np.sqrt(f[:-1] * f[1:]), [f[-1] * 1.02]))
-        idx = np.searchsorted(freqs, edges)
-        _ROOM_GAIN[name] = [20 * math.log10(max(float(mag[a:max(b, a + 1)].max()), 1e-9))
-                            for a, b in zip(idx[:-1], idx[1:])]
-    return _ROOM_GAIN[name]
+    except ImportError:  # 沒有 numpy：用穩態估計＋實測最多的暫態超出量
+        return steady_peak(filters, width) + 3.0
+    sigs = _test_signals(np)
+    if room and room not in _IRS:
+        _IRS[room] = room_ir(room, 48000)  # 算峰值用的 48 kHz 殘響
+    ir = _IRS[room] if room else None
+    n = len(sigs[0][0]) + (len(ir) if ir is not None else 0) + 24000
+    nfft = 1 << (n - 1).bit_length()
+    f = np.fft.rfftfreq(nfft, 1 / 48000)
+    he = _H(np, filters, f)
+    _n, gain, fc = CROSSFEED[crossfeed]
+    hs = _H(np, [("LSC", fc, gain, 0.5)], f) if crossfeed else 1
+    k = width / 100
+    a, b = (1 + hs) / 2, (1 - hs) / 2  # 交叉饋送：中間不變、側邊低頻變小
+    ll, lr = he * ((1 + k) * a - k * b), he * ((1 + k) * b - k * a)  # 再加上寬度
+    if ir is not None:
+        r = np.fft.rfft(ir, nfft, axis=0)
+    peak = 0.0
+    for s1, s2 in zip(*sigs):
+        X1, X2 = np.fft.rfft(s1, nfft), np.fft.rfft(s2, nfft)
+        for xl, xr in ((X1, X1), (X1, -X1), (X1, X2)):  # 左右相同、左右反相、左右不同樂器
+            yl, yr = ll * xl + lr * xr, lr * xl + ll * xr
+            if ir is not None:
+                yl, yr = r[:, 0] * yl + r[:, 3] * yr, r[:, 1] * yr + r[:, 2] * yl
+            peak = max(peak, np.abs(np.fft.irfft(yl, nfft)).max(), np.abs(np.fft.irfft(yr, nfft)).max())
+    if len(_PEAKS) > 300:
+        _PEAKS.clear()
+    _PEAKS[key] = 20 * math.log10(peak)
+    return _PEAKS[key]
 
 
 # 全域快捷鍵：id, 修飾鍵(Ctrl+Alt), 按鍵, 名稱, 說明
@@ -791,7 +918,8 @@ def curve(filters):
 
 
 def update_headroom():
-    """固定預留＝目前耳機的每一種校正 × 每個內建風格裡，最大的加強（取 0.5 dB，6–18 dB 之間）"""
+    """固定預留＝目前耳機的每一種校正 × 每個內建風格裡，最大的穩態加強＋暫態超出量（取 0.5 dB，6–20 dB 之間）。
+    寬度用左右反相時的最壞情況 1+2k；個別組合還不夠的話，套用時會用實際峰值自動再多降"""
     global HEADROOM
     bases = [curve(fl) for _n, fl in BASES.values()]
     cache, worst = {}, 0.0
@@ -799,9 +927,9 @@ def update_headroom():
         key = tuple(vals)
         if key not in cache:
             cache[key] = curve([(k, f, g, q) for (_b, k, f, q, _h), g in zip(BANDS, vals) if g])
-        wk = 20 * math.log10(1 + width / 100)
+        wk = 20 * math.log10(1 + 2 * width / 100)
         worst = max(worst, max(max(a + b for a, b in zip(bc, cache[key])) for bc in bases) + wk)
-    HEADROOM = min(18.0, max(6.0, math.ceil(worst * 2) / 2))
+    HEADROOM = min(20.0, max(6.0, math.ceil((worst + OVERSHOOT) * 2) / 2))
     return HEADROOM
 
 
@@ -987,14 +1115,10 @@ def _analyze_tidal():
     return mine, plain
 
 
-def build_config(filters, width=0, crossfeed=0, balance=0.0, reverb_file="", room_db=None, extra=0.0, headroom=None):
-    """產生設定檔內容，回傳 (內容, 最高加強 dB)。音量固定降 HEADROOM，EQ 關閉時也一樣。
-    width＝聲場加寬百分比、crossfeed＝交叉饋送等級、balance＝左右平衡（正＝偏右）"""
+def build_config(filters, width=0, crossfeed=0, balance=0.0, reverb_files=None, extra=0.0, headroom=None):
+    """產生設定檔內容。音量固定降 HEADROOM（＋extra），EQ 關閉時也一樣。
+    width＝聲場加寬百分比、crossfeed＝交叉饋送等級、balance＝左右平衡（正＝偏右）、reverb_files＝{取樣率: 殘響檔}"""
     k = width / 100
-    eq = curve(filters) if filters else [0.0] * len(FREQS)
-    if room_db:  # 殘響的最壞增益疊上去
-        eq = [a + b for a, b in zip(eq, room_db)]
-    peak = max(eq) + 20 * math.log10(1 + k)
     lines = ["# written by headphone tuner", f"Preamp: {-((HEADROOM if headroom is None else headroom) + extra):.1f} dB"]
     lines += [f"Filter: ON {t} Fc {fc:g} Hz Gain {g:.1f} dB Q {q:.2f}" for t, fc, g, q in filters]
     if crossfeed:  # 轉成中(M)/側(S) → 只把低頻的側訊號變小 → 低頻互相滲一點過去，像聽喇叭
@@ -1007,9 +1131,9 @@ def build_config(filters, width=0, crossfeed=0, balance=0.0, reverb_file="", roo
     if balance:  # 只壓低另一邊，不會多加音量
         side = "L" if balance > 0 else "R"
         lines.append(f"Copy: {side}={10 ** (-abs(balance) / 20):.4f}*{side}")
-    if reverb_file:  # 殘響：直達聲＋空間反射（檔案依 DAC 取樣率做）
-        lines.append(f"Convolution: {reverb_file}")
-    return "\n".join(lines) + "\n", peak
+    if reverb_files:  # 殘響：直達聲＋空間反射（每個取樣率一份）
+        lines += reverb_lines(reverb_files)
+    return "\n".join(lines) + "\n"
 
 
 def start_hotkeys(root, actions, on_fail):
@@ -1258,6 +1382,7 @@ class App:
         self.follow = tk.BooleanVar(value=s.get("follow", True))
         self._perm_asked = False
         self.eq_problem = None  # 每 2 秒在 refresh_device 更新
+        self._ir_jobs, self._ir_ready, self._clean_job = set(), False, None  # 背景做殘響檔
         self.enabled = tk.BooleanVar(value=last.get("enabled", True))
         self.base = tk.StringVar(value=last.get("base") if last.get("base") in BASES else default_base())
         self.bands = [tk.DoubleVar(value=v) for v in (last.get("bands") or [0] * len(BANDS))]
@@ -2002,6 +2127,9 @@ class App:
 
     # ---------- 每 2 秒更新：裝置、輸出格式、播放資訊 ----------
     def tick(self):
+        if self._ir_ready:  # 背景做好其他取樣率的殘響檔 → 寫進設定
+            self._ir_ready = False
+            self.write_config()
         hf = False
         if self.follow.get() and not getattr(self, "_holding", False):
             g = default_device_guid(strict=True)
@@ -2195,7 +2323,7 @@ class App:
     def toggle_passthrough(self):
         if self.passthrough.get() and not messagebox.askokcancel(
                 "直通模式",
-                f"直通模式完全不處理聲音，也不會預留音量，\n聲音會突然變大約 {HEADROOM:g} dB（約 3 倍大聲）。\n\n"
+                f"直通模式完全不處理聲音，也不會預留音量，\n聲音會突然變大約 {HEADROOM:g} dB（非常大聲）。\n\n"
                 "請先把解碼器／耳擴的音量轉小，再按「確定」。", parent=self.root):
             self.passthrough.set(False)
         self.changed()
@@ -2320,43 +2448,39 @@ class App:
         base, style = self.filters()
         through = self.passthrough.get()
         on = self.enabled.get() and not through
-        room, reverb_file, room_db, note = int(self.room.get()), "", None, ""
+        room, files, note = int(self.room.get()), {}, ""
         if room:
             if not self.cur_fmt:
                 note = "（沒偵測到 DAC 取樣率，殘響暫停）"
             else:
                 try:
-                    reverb_file = room_file(self.cfg_dir, room, self.cur_fmt[1])
-                    room_db = room_gain(self.cfg_dir, reverb_file)
-                    self._ir_rate = self.cur_fmt[1]
+                    files = self.reverb_files(room)
                 except Exception as e:  # 沒有 numpy 或寫不進去
                     note = f"（殘響做不出來：{e}）"
-        args = (base + style, self.width.get(), int(self.crossfeed.get()), self.balance.get(), reverb_file, room_db)
-        # 固定預留：殘響才自動多降（用實際算出的最壞增益）。音量優先：只預留目前設定需要的。
+        filters, width, cf = base + style, self.width.get(), int(self.crossfeed.get())
+        # 用滿格母帶實際算這組設定的輸出峰值。固定預留：超過就整體多降。音量優先：只預留目前設定需要的。
         # 兩種都一樣：EQ 關掉時用同一個音量，A/B 比較才公平
-        need = build_config(*args)[1]
+        need = true_peak(filters, width, cf, room if files else 0) + SAFETY
         if self.loud.get():
             hr, extra = max(0.0, math.ceil(need * 2) / 2), 0.0
         else:
-            hr, extra = HEADROOM, (max(0.0, need - HEADROOM) if reverb_file else 0.0)
-        text, peak = build_config(*args, extra, headroom=hr) if on else build_config([], extra=extra, headroom=hr)
+            hr, extra = HEADROOM, math.ceil(max(0.0, need - HEADROOM) * 10) / 10
+        text = (build_config(filters, width, cf, self.balance.get(), files, extra, headroom=hr) if on
+                else build_config([], extra=extra, headroom=hr))
         if through:  # 不寫 Preamp、不寫任何濾波器 → 訊號原封不動
             text = "# written by headphone tuner\n# passthrough: no processing\n"
         try:
-            with open(os.path.join(self.cfg_dir, out_name(self.dev_guid or DUMMY_GUID)), "w", encoding="ascii") as fh:
-                fh.write(text)
+            write_atomic(os.path.join(self.cfg_dir, out_name(self.dev_guid or DUMMY_GUID)), text)
             try:
                 os.utime(os.path.join(self.cfg_dir, "config.txt"))  # 提醒 Equalizer APO 重新讀取
             except OSError:
                 pass
             if through:
                 self.status.config(text="✓ 直通模式：訊號完全不處理（EQ、聲場、固定降音量都暫停）", fg=GREEN)
-            elif peak > hr + extra + 0.05:
-                self.status.config(text=f"⚠ 已套用，但最高加強 +{peak:.1f} dB 超過預留的 {hr:g} dB，"
-                                        "很大聲的段落可能破音（把加強的滑桿調少一點）", fg=ORANGE)
             else:
+                why = "殘響" if files else "加強比較多"
                 msg = (f"✓ 已套用　音量優先：只預留 {hr:g} dB（換風格音量會變，開關 EQ 音量一樣）" if self.loud.get() else
-                       f"✓ 已套用　殘響開啟：整體多降 {extra:.1f} dB 防破音（開關 EQ 音量仍一樣）" if extra else
+                       f"✓ 已套用　{why}：整體多降 {extra:.1f} dB 防破音（開關 EQ 音量仍一樣）" if extra else
                        "✓ 已套用　音量固定，切換設定、開關 EQ 音量都一樣　（關掉視窗 EQ 仍然有效）")
                 self.status.config(text=msg + note, fg=ORANGE if note else GREEN)
         except PermissionError:
@@ -2365,6 +2489,44 @@ class App:
         except OSError as e:
             self.status.config(text=f"✗ 寫入失敗：{e}", fg=ORANGE)
         self.save_settings()
+        # 舊的殘響檔等 Equalizer APO 換成新設定後再刪（其他裝置正在用的不刪）
+        if self._clean_job:
+            self.root.after_cancel(self._clean_job)
+        keep = set(files.values()) | self.reverb_in_use()
+        self._clean_job = self.root.after(5000, lambda: cleanup_reverb(self.cfg_dir, keep))
+
+    def reverb_files(self, room):
+        """目前取樣率的殘響檔馬上做；其他常見取樣率在背景做（做完再寫一次設定）→ 回傳 {取樣率: 檔名}"""
+        rate = self.cur_fmt[1]
+        room_file(self.cfg_dir, room, rate)
+        self._ir_rate = rate
+        rates = sorted(set(REVERB_RATES) | {rate})
+        todo = [r for r in rates if not os.path.exists(os.path.join(self.cfg_dir, room_name(room, r)))]
+        if todo and room not in self._ir_jobs:
+            self._ir_jobs.add(room)
+
+            def work():
+                try:
+                    for r in todo:
+                        room_file(self.cfg_dir, room, r)
+                except Exception:
+                    pass
+                self._ir_jobs.discard(room)
+                self._ir_ready = True  # tick() 看到就重寫設定（tkinter 只能在主執行緒動）
+            threading.Thread(target=work, daemon=True).start()
+        return {r: room_name(room, r) for r in rates if os.path.exists(os.path.join(self.cfg_dir, room_name(room, r)))}
+
+    def reverb_in_use(self):
+        """其他裝置（例如藍牙耳機）的設定檔還在用的殘響檔"""
+        used = set()
+        for fn in os.listdir(self.cfg_dir):
+            if fn.startswith("tuner_") and fn.endswith(".txt"):
+                try:
+                    used |= set(re.findall(r"Convolution: (\S+)", open(os.path.join(self.cfg_dir, fn), encoding="ascii",
+                                                                      errors="ignore").read()))
+                except OSError:
+                    pass
+        return used
 
     def test_tone(self, where):
         """在選定的裝置播 4 秒粉紅噪音（會經過 EQ，所以能用來校正左右平衡）"""
