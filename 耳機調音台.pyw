@@ -2449,14 +2449,13 @@ class App:
         through = self.passthrough.get()
         on = self.enabled.get() and not through
         room, files, note = int(self.room.get()), {}, ""
-        if room:
-            if not self.cur_fmt:
-                note = "（沒偵測到 DAC 取樣率，殘響暫停）"
-            else:
-                try:
-                    files = self.reverb_files(room)
-                except Exception as e:  # 沒有 numpy 或寫不進去
-                    note = f"（殘響做不出來：{e}）"
+        if room:  # 偵測不到取樣率時也用已經做好的常見取樣率殘響檔（以前會整段拿掉，之後同取樣率回來也不會補回）
+            try:
+                files = self.reverb_files(room)
+            except Exception as e:  # 沒有 numpy 或寫不進去
+                note = f"（殘響做不出來：{e}）"
+            if not files and not note:
+                note = "（殘響檔準備中）"
         filters, width, cf = base + style, self.width.get(), int(self.crossfeed.get())
         # 用滿格母帶實際算這組設定的輸出峰值。固定預留：超過就整體多降。音量優先：只預留目前設定需要的。
         # 兩種都一樣：EQ 關掉時用同一個音量，A/B 比較才公平
@@ -2497,10 +2496,11 @@ class App:
 
     def reverb_files(self, room):
         """目前取樣率的殘響檔馬上做；其他常見取樣率在背景做（做完再寫一次設定）→ 回傳 {取樣率: 檔名}"""
-        rate = self.cur_fmt[1]
-        room_file(self.cfg_dir, room, rate)
-        self._ir_rate = rate
-        rates = sorted(set(REVERB_RATES) | {rate})
+        rate = self.cur_fmt[1] if self.cur_fmt else None
+        if rate:
+            room_file(self.cfg_dir, room, rate)
+        self._ir_rate = rate  # None＝沒偵測到取樣率；之後偵測到時 refresh_format 會再寫一次
+        rates = sorted(set(REVERB_RATES) | ({rate} if rate else set()))
         todo = [r for r in rates if not os.path.exists(os.path.join(self.cfg_dir, room_name(room, r)))]
         if todo and room not in self._ir_jobs:
             self._ir_jobs.add(room)
@@ -2591,6 +2591,7 @@ class App:
 
     def reset_default(self):
         self.enabled.set(True)
+        self.passthrough.set(False)
         self.base.set(default_base())
         self.crossfeed.set(0)
         self.balance.set(0)
