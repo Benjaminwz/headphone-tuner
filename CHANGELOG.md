@@ -4,6 +4,8 @@
 
 ## [未發佈]
 
+## [1.6.0] - 2026-10-25
+
 ### 新增
 - README 重新整理：版本比較表、快速開始、常見問題、建置說明
 - `CONTRIBUTING.md`、Issue 範本、PR 範本
@@ -54,7 +56,8 @@
 ## [1.0.0] - 2026-09-27
 - 繁體中文介面的耳機等化器，第一版
 
-[未發佈]: https://github.com/Benjaminwz/headphone-tuner/compare/v1.5.0...HEAD
+[未發佈]: https://github.com/Benjaminwz/headphone-tuner/compare/v1.6.0...HEAD
+[1.6.0]: https://github.com/Benjaminwz/headphone-tuner/releases/tag/v1.6.0
 [1.5.0]: https://github.com/Benjaminwz/headphone-tuner/releases/tag/v1.5.0
 [1.4.0]: https://github.com/Benjaminwz/headphone-tuner/releases/tag/v1.4.0
 [1.3.0]: https://github.com/Benjaminwz/headphone-tuner/releases/tag/v1.3.0
