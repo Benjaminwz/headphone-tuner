@@ -57,6 +57,7 @@ Source: "{#Root}\tuner.ico"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#Root}\說明.txt"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#Root}\README.md"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#Root}\LICENSE"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#Root}\殘響\*.npy"; DestDir: "{app}\殘響"; Flags: ignoreversion
 Source: "bootstrap.cmd"; DestDir: "{app}"; Flags: ignoreversion
 Source: "uv\uv.exe"; DestDir: "{app}\bin"; Flags: ignoreversion
 

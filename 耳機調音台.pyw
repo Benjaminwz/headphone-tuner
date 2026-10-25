@@ -69,15 +69,16 @@ HELP = {
     "臨場感": "3.5 kHz 附近：清晰、貼近耳邊的感覺，太多會刺耳。",
     "高頻": "10 kHz 以上：亮度、空氣感，太多會嘶嘶的。",
     "聲場寬度": "把左右的差異放大，樂器分得更開、舞台更寬。開太大會有點不自然。",
-    "交叉饋送": "喇叭的聲音兩耳都聽得到，耳機卻是左右完全分開。交叉饋送讓一點低頻滲到另一耳，"
-               "聲音從腦袋中間移到前方，長時間聽比較不累。",
+    "交叉饋送": "喇叭的聲音兩耳都聽得到，耳機卻是左右完全分開。交叉饋送用頭部模型算出前方喇叭繞過頭到另一耳的聲音，"
+               "聲音從腦袋中間移到前方，長時間聽比較不累；人聲這類在中間的聲音音色不變。",
     "左右平衡": "左右耳聽力不同、或耳機左右不一樣大聲時用。可以用下面的測試音檢查。",
-    "殘響空間": "加上房間的回音：錄音室（小、乾淨）或音樂廳（大、有殿堂感）。",
+    "殘響空間": "加上房間的回音：錄音室（小、乾淨）或音樂廳（大、有殿堂感）。回音是照真實房間的形狀做聲學模擬算出來的。",
     "平衡測試音": "播放很小聲的粉紅噪音：按「中央」時聲音應該在正中間。",
-    "位元深度": "每個取樣的精細度。24-bit 就很夠了。",
+    "位元深度": "每個取樣的精細度。選 32-bit，電腦處理完的聲音可以原封不動送給 DAC。",
     "音量優先": "藍牙耳機常常開到最大聲還是不夠大。打開後只預留「目前這組設定」需要的音量空間，會大聲不少；"
                "代價是換風格時音量會跟著變（按住聽原音、開關 EQ 比較時音量仍然一樣）。",
-    "取樣率（kHz）": "每秒取樣次數。CD 音源選 44.1 的倍數最單純；調更高沒有明顯差別。",
+    "取樣率（kHz）": "每秒取樣次數。選 88.2 以上時，調音台會在電腦裡做重建濾波（把 20 kHz 以上濾乾淨，DAC 負擔變小），"
+                   "EQ 的高頻也更準。CD、串流多半是 44.1，所以選它的倍數（88.2／176.4／352.8）最好；DAC 不支援就維持原樣。",
 }
 GUIDE = [
     ("選耳機", "按上方「耳機：」，輸入型號（例：HD 600、XM5），點兩下。藍牙耳機一連上，調音台會自動切過去，"
@@ -392,6 +393,7 @@ AUTO = "自動 "  # 自動存檔的預設名稱開頭
 HEADROOM = 11.0
 # 耳機交叉饋送（bs2b 三組標準參數）：名稱, 低頻側訊號衰減 dB, 轉折頻率 Hz
 # 輕＝Jan Meier（650 Hz / 9.5 dB）、中＝Chu Moy（700 Hz / 6 dB）、強＝bs2b 預設（700 Hz / 4.5 dB）
+# 現在只取它們的低頻分離度（9.6／6.0／4.5 dB），頻率響應和時間差改用頭部模型精確計算（xfeed_tf）；沒有 numpy 時才用這裡的中/側濾波
 CROSSFEED = [("關", 0.0, 700), ("輕", -6.0, 650), ("中", -9.6, 700), ("強", -11.9, 700)]
 # 殘響空間：名稱, 中頻殘響 RT60(秒), 低頻比, 高頻比, 首次反射 ITDG(ms), 直達/殘響比 DRR(dB), 檔名
 ROOMS = [("關", 0, 0, 0, 0, 0, ""),
@@ -403,13 +405,214 @@ ROOMS = [("關", 0, 0, 0, 0, 0, ""),
 REVERB_RATES = (44100, 48000, 88200, 96000, 176400, 192000)  # 這些取樣率都先做好殘響檔（調音台沒開時裝置換取樣率也有殘響）
 
 
+# 殘響 v5：tools/殘響模擬.py 用顯示卡在真實形狀的房間裡做聲學模擬（鏡像聲源的早期反射＋每個聲源 3,355 萬條聲線追蹤的後段
+# ＋剛性球頭部模型），存在「殘響」資料夾；殘響時間照 ROOMS，直達/殘響比在這裡縮放。
+# 沒有那個檔（或讀不了）就用 room_ir 裡的簡化版（v3，itdg 只在那裡用）
+REVERB_DIR = os.path.join(APP_DIR, "殘響")
+MASTER_FS = 48000  # 模擬檔的取樣率：只有 20 kHz 以下的聲音，48 kHz 就完整保存
+_MASTERS = {}
+
+
+def room_master(key):
+    """這個房間模擬好的殘響（48 kHz、4 聲道、只有殘響、每個聲源兩耳總能量＝1）→ (陣列, 版本) 或 None"""
+    path = os.path.join(REVERB_DIR, f"{key}.npy")
+    try:
+        tag = f"{int(os.path.getmtime(path)) % 65536:04x}"  # 模擬檔更新過 → 檔名跟著換，Equalizer APO 才會讀新的
+    except OSError:
+        return None
+    if _MASTERS.get(key, (None, None))[1] != tag:
+        try:
+            import numpy as np
+            _MASTERS[key] = (np.load(path).astype(float), tag)
+        except (ImportError, OSError, ValueError):
+            return None
+    return _MASTERS[key]
+
+
+def _resample(x, rate, src=MASTER_FS):
+    """FFT 轉取樣率（模擬檔 20 kHz 以上已經濾掉，不會疊頻）；脈衝響應要保持同樣的頻率響應 → 不再乘長度比例"""
+    import numpy as np
+    if rate == src:
+        return x.copy()
+    m = int(round(len(x) * rate / src))
+    X = np.fft.rfft(x, axis=0)
+    k = min(m // 2 + 1, len(X))
+    Y = np.zeros((m // 2 + 1, x.shape[1]), complex)
+    Y[:k] = X[:k]
+    return np.fft.irfft(Y, m, axis=0)
+
+
+def write_wav(path, data, rate):
+    """32-bit 浮點 WAV（Equalizer APO 的摺積用）；先寫暫存檔再改名，Equalizer APO 不會讀到寫一半的檔"""
+    raw = data.astype("<f4").tobytes()
+    ch = data.shape[1]
+    head = (b"RIFF" + struct.pack("<I", 36 + len(raw)) + b"WAVEfmt " +
+            struct.pack("<IHHIIHH", 16, 3, ch, rate, rate * 4 * ch, 4 * ch, 32) + b"data" + struct.pack("<I", len(raw)))
+    with open(path + ".tmp", "wb") as fh:
+        fh.write(head + raw)
+    os.replace(path + ".tmp", path)
+
+
+SOUND_C, HEAD_A = 343.2, 0.0875  # 音速（20 °C）、頭的半徑
+
+
+def sphere(f, theta, a=HEAD_A):
+    """剛性球（半徑 a）表面一點，平面波從 theta 角來（0＝正對）的頻率響應：Duda & Martens 1998（JASA）的級數解；
+    numpy 的時間慣例（延遲＝e^{-j2πfτ}）。跟 tools/殘響模擬.py 用的是同一個頭部模型"""
+    import numpy as np
+    f = np.asarray(f, float)
+    H = np.ones((len(theta), len(f)), complex)
+    x = 2 * np.pi * f * a / SOUND_C
+    nz = x > 1e-6
+    x = x[nz]
+    M = int(x.max() + 10 * x.max() ** (1 / 3) + 20)
+    j, y = np.zeros((M + 2, len(x))), np.zeros((M + 2, len(x)))
+    j[0], j[1] = np.sin(x) / x, np.sin(x) / x ** 2 - np.cos(x) / x
+    y[0], y[1] = -np.cos(x) / x, -np.cos(x) / x ** 2 - np.sin(x) / x
+    with np.errstate(over="ignore", invalid="ignore", divide="ignore"):
+        for m in range(1, M + 1):
+            j[m + 1] = (2 * m + 1) / x * j[m] - j[m - 1]
+            y[m + 1] = (2 * m + 1) / x * y[m] - y[m - 1]
+        h = j + 1j * y
+        dh = np.empty((M + 1, len(x)), complex)
+        dh[0] = -h[1]
+        mm = np.arange(M + 1)[:, None]
+        dh[1:] = h[:-2] - (mm[1:] + 1) / x * h[1:-1]
+        use = (mm <= x + 10 * x ** (1 / 3) + 20) & np.isfinite(dh) & (np.abs(dh) > 0)
+        coef = np.where(use, (-1j) ** (mm - 1.0) * (2 * mm + 1) / np.where(use, dh, 1), 0)
+    c = np.cos(theta)
+    P = np.zeros((len(theta), M + 1))
+    P[:, 0] = 1
+    P[:, 1] = c
+    for m in range(1, M):
+        P[:, m + 1] = ((2 * m + 1) * c * P[:, m] - m * P[:, m - 1]) / (m + 1)
+    H[:, nz] = (P @ coef) / x ** 2
+    return np.conj(H)
+
+
+def minphase(mag):
+    """大小 → 最小相位的頻率響應（倒頻譜法）"""
+    import numpy as np
+    n = 2 * (len(mag) - 1)
+    c = np.fft.irfft(np.log(np.maximum(mag, 1e-8)), n)
+    c[1:n // 2] *= 2
+    c[n // 2 + 1:] = 0
+    return np.exp(np.fft.rfft(c, n))
+
+
+# 交叉饋送 v2：喇叭在 ±30°（ITU-R BS.775）時，左喇叭的聲音會繞過頭到右耳——Bauer 1961 交叉饋送的原意。
+# 用剛性球頭的精確解算出「對側耳／同側耳」的兩耳傳遞函數（時間差約 0.26 ms、頻率越高被頭擋掉越多），
+# 取代原本只把低頻左右混一點、沒有時間差的中/側濾波。輕／中／強 照原本的低頻左右分離度（9.6／6.0／4.5 dB），
+# 再補償成「左右一樣的聲音（人聲、貝斯）總響應平直」→ 音色不變，只有左右分很開的聲音被拉回前方
+XF_EAR, XF_SPK = 100, 30  # 耳朵在正前方左右 100°、喇叭在 ±30°
+_XF = {}
+
+
+def xfeed_tf(level, f):
+    """交叉饋送的頻率響應 → (同側, 對側)；f 是 rfft 的頻率格"""
+    key = (level, len(f), float(f[-1]))
+    if key not in _XF:
+        import numpy as np
+        g = 10 ** (CROSSFEED[level][1] / 20)
+        c = (1 - g) / (1 + g)  # 低頻的對側量：跟原本的中/側濾波低頻分離度一樣
+        H = sphere(f, np.radians([XF_EAR - XF_SPK, XF_EAR + XF_SPK]))
+        itf = H[1] / H[0]
+        eq = minphase(1 / np.abs(1 + c * itf))  # 左右一樣的聲音：同側＋對側剛好平直
+        _XF[key] = (eq, eq * c * itf)
+    return _XF[key]
+
+
+def xfeed_files(cfg_dir, level):
+    """每個取樣率一份交叉饋送檔（4 聲道：L、R 的同側，XL、XR 的對側）→ {取樣率: 檔名}"""
+    import numpy as np
+    out = {}
+    for rate in RATES:
+        name = f"xfeed_v2_{level}_{rate}.wav"
+        path = os.path.join(cfg_dir, name)
+        if not os.path.exists(path):
+            n = 1 << max(10, math.ceil(math.log2(rate * 0.04)))
+            same, cross = xfeed_tf(level, np.fft.rfftfreq(n, 1 / rate))
+            hs, hx = np.fft.irfft(same, n), np.fft.irfft(cross, n)
+            fade = np.ones(n)
+            fade[n // 2:] = np.cos(np.linspace(0, np.pi / 2, n - n // 2)) ** 2
+            write_wav(path, np.stack([hs, hs, hx, hx], 1) * fade[:, None], rate)
+        out[rate] = name
+    return out
+
+
+def xfeed_lines(files):
+    out = []
+    for rate, name in sorted(files.items()):
+        out += [f"If: sampleRate == {rate}", "Copy: XL=L XR=R", "Channel: L R XL XR", f"Convolution: {name}",
+                "Channel: all", "Copy: L=L+XR R=R+XL", "EndIf:"]
+    return out
+
+
+# 電腦重建濾波：裝置設成 88.2 kHz 以上時，在電腦裡用長的線性相位濾波器把 20 kHz 以上濾乾淨
+# （通帶到 20 kHz、22.05 kHz 起阻隔 140 dB，Kaiser 窗；32-bit 浮點的極限附近）。串流和 CD 多半是 44.1 kHz：
+# Windows 轉取樣率留下的鏡像、處理產生的超音波都在這裡清掉，DAC 自己的數位濾波器只剩輕鬆的工作
+# ——也就是把重建濾波的「解析力負擔」交給電腦（HQPlayer 這類軟體的作法）。延遲約 2 ms
+RECON_MIN = 88200
+RECON_PASS, RECON_STOP, RECON_DB = 20000.0, 22050.0, 140.0
+_LP = {}
+
+
+def recon_taps(rate):
+    import numpy as np
+    beta = 0.1102 * (RECON_DB - 8.7)
+    n = int(math.ceil((RECON_DB - 7.95) / (14.36 * (RECON_STOP - RECON_PASS) / rate))) | 1
+    t = np.arange(n) - (n - 1) / 2
+    fc = (RECON_PASS + RECON_STOP) / 2 / rate
+    h = 2 * fc * np.sinc(2 * fc * t) * np.kaiser(n, beta)
+    return h / h.sum()
+
+
+def recon_files(cfg_dir):
+    import numpy as np
+    out = {}
+    for rate in RATES:
+        if rate >= RECON_MIN:
+            name = f"recon_v1_{rate}.wav"
+            if not os.path.exists(os.path.join(cfg_dir, name)):
+                h = recon_taps(rate)
+                write_wav(os.path.join(cfg_dir, name), np.stack([h, h], 1), rate)
+            out[rate] = name
+    return out
+
+
+def recon_lines(files):
+    out = []
+    for rate, name in sorted(files.items()):
+        out += [f"If: sampleRate == {rate}", "Channel: L R", f"Convolution: {name}", "Channel: all", "EndIf:"]
+    return out
+
+
+def recon_lp(f):
+    """重建濾波的大小（算峰值用；線性相位，延遲不影響峰值）"""
+    key = (len(f), float(f[-1]))
+    if key not in _LP:
+        import numpy as np
+        rate = 352800
+        n = 1 << 21
+        H = np.abs(np.fft.rfft(recon_taps(rate), n))
+        _LP[key] = np.interp(f, np.fft.rfftfreq(n, 1 / rate), H)
+    return _LP[key]
+
+
 def room_ir(room, rate):
     """殘響的脈衝響應，4 聲道：0＝左→左、1＝右→右、2＝左→右、3＝右→左。
     真實房間裡，左邊樂器的殘響兩耳都聽得到（擴散聲場兩耳能量相同），所以每個聲源各有一對兩耳的尾巴；
     兩耳相關性照真實擴散聲場 sin(kd)/kd（Lindevald & Benade，耳距約 18 cm）→ 低頻兩耳幾乎一樣、約 1 kHz 以上各自獨立。
     每條尾巴能量各一半 → 置中的聲音直達/殘響比跟設定一樣，偏一邊的聲音殘響也不會只出現在同一耳"""
     import numpy as np
-    _n, rt, br, tr, itdg, drr, _key = ROOMS[room]
+    _n, rt, br, tr, itdg, drr, key = ROOMS[room]
+    master = room_master(key)
+    if master is not None:  # v5：模擬好的房間，依直達/殘響比縮放
+        # 直達/殘響比用 20 Hz–20 kHz 裡的能量算：模擬檔只到 20 kHz，原音的單位脈衝只有一部分能量在這範圍
+        # → 任何取樣率聽起來都一樣大（舊版 v3 在不同取樣率會差 2–3 dB）
+        ir = _resample(master[0], rate) * 10 ** (-drr / 20) * math.sqrt(20000 / (MASTER_FS / 2))
+        ir[0, :2] += 1.0  # 直達聲＝原音
+        return ir
     n = int(rate * (itdg / 1000 + rt * max(br, 1) * 1.05))
     t = np.arange(n) / rate
     freqs = np.fft.rfftfreq(n, 1 / rate)
@@ -436,21 +639,17 @@ def room_ir(room, rate):
 
 
 def room_name(room, rate):
-    return f"reverb_{ROOMS[room][6]}_v3_{rate}.wav"  # v3：左右兩耳都有殘響
+    master = room_master(ROOMS[room][6])
+    ver = f"v5{master[1]}" if master else "v3"  # v3：左右兩耳都有殘響；v5：模擬的房間
+    return f"reverb_{ROOMS[room][6]}_{ver}_{rate}.wav"
 
 
 def room_file(cfg_dir, room, rate):
-    """殘響檔（Equalizer APO 不會自動轉取樣率，所以每個取樣率各一份）；已經有就直接用。
-    先寫暫存檔再改名：Equalizer APO 不會讀到寫一半的檔"""
+    """殘響檔（Equalizer APO 不會自動轉取樣率，所以每個取樣率各一份）；已經有就直接用"""
     name = room_name(room, rate)
     path = os.path.join(cfg_dir, name)
     if not os.path.exists(path):
-        data = room_ir(room, rate).astype("<f4").tobytes()
-        head = (b"RIFF" + struct.pack("<I", 36 + len(data)) + b"WAVEfmt " +
-                struct.pack("<IHHIIHH", 16, 3, 4, rate, rate * 16, 16, 32) + b"data" + struct.pack("<I", len(data)))
-        with open(path + ".tmp", "wb") as fh:
-            fh.write(head + data)
-        os.replace(path + ".tmp", path)
+        write_wav(path, room_ir(room, rate), rate)
     return name
 
 
@@ -554,9 +753,10 @@ def steady_peak(filters, width=0):
     return max(curve(filters) or [0.0]) + 20 * math.log10(1 + 2 * width / 100)
 
 
-def true_peak(filters, width=0, crossfeed=0, room=0):
-    """滿格母帶經過這組設定後的輸出峰值（dB，0＝跟輸入滿格一樣大）"""
-    key = (tuple(filters), width, crossfeed, room)
+def true_peak(filters, width=0, crossfeed=0, room=0, recon=False):
+    """滿格母帶經過這組設定後的輸出峰值（dB，0＝跟輸入滿格一樣大）。
+    recon＝電腦重建濾波開著：濾掉 20 kHz 以上後，削波母帶的波峰會冒出來（樣本之間的峰值）→ 用 4 倍超取樣算"""
+    key = (tuple(filters), width, crossfeed, room, recon)
     if key in _PEAKS:
         return _PEAKS[key]
     try:
@@ -571,10 +771,9 @@ def true_peak(filters, width=0, crossfeed=0, room=0):
     nfft = 1 << (n - 1).bit_length()
     f = np.fft.rfftfreq(nfft, 1 / 48000)
     he = _H(np, filters, f)
-    _n, gain, fc = CROSSFEED[crossfeed]
-    hs = _H(np, [("LSC", fc, gain, 0.5)], f) if crossfeed else 1
     k = width / 100
-    a, b = (1 + hs) / 2, (1 - hs) / 2  # 交叉饋送：中間不變、側邊低頻變小
+    a, b = xfeed_tf(crossfeed, f) if crossfeed else (1, 0)  # 交叉饋送：同側、對側
+    lp = recon_lp(f) if recon else None
     ll, lr = he * ((1 + k) * a - k * b), he * ((1 + k) * b - k * a)  # 再加上寬度
     if ir is not None:
         r = np.fft.rfft(ir, nfft, axis=0)
@@ -585,7 +784,11 @@ def true_peak(filters, width=0, crossfeed=0, room=0):
             yl, yr = ll * xl + lr * xr, lr * xl + ll * xr
             if ir is not None:
                 yl, yr = r[:, 0] * yl + r[:, 3] * yr, r[:, 1] * yr + r[:, 2] * yl
-            peak = max(peak, np.abs(np.fft.irfft(yl, nfft)).max(), np.abs(np.fft.irfft(yr, nfft)).max())
+            if lp is not None:
+                m = 4 * nfft
+                peak = max(peak, 4 * np.abs(np.fft.irfft(yl * lp, m)).max(), 4 * np.abs(np.fft.irfft(yr * lp, m)).max())
+            else:
+                peak = max(peak, np.abs(np.fft.irfft(yl, nfft)).max(), np.abs(np.fft.irfft(yr, nfft)).max())
     if len(_PEAKS) > 300:
         _PEAKS.clear()
     _PEAKS[key] = 20 * math.log10(peak)
@@ -1183,13 +1386,17 @@ def _analyze_tidal():
     return mine, plain
 
 
-def build_config(filters, width=0, crossfeed=0, balance=0.0, reverb_files=None, extra=0.0, headroom=None):
+def build_config(filters, width=0, crossfeed=0, balance=0.0, reverb_files=None, extra=0.0, headroom=None,
+                 xfeed=None, recon=None):
     """產生設定檔內容。音量固定降 HEADROOM（＋extra），EQ 關閉時也一樣。
-    width＝聲場加寬百分比、crossfeed＝交叉饋送等級、balance＝左右平衡（正＝偏右）、reverb_files＝{取樣率: 殘響檔}"""
+    width＝聲場加寬百分比、crossfeed＝交叉饋送等級、balance＝左右平衡（正＝偏右）、reverb_files＝{取樣率: 殘響檔}、
+    xfeed＝{取樣率: 交叉饋送檔}、recon＝{取樣率: 重建濾波檔}"""
     k = width / 100
     lines = ["# written by headphone tuner", f"Preamp: {-((HEADROOM if headroom is None else headroom) + extra):.1f} dB"]
     lines += [f"Filter: ON {t} Fc {fc:g} Hz Gain {g:.1f} dB Q {q:.2f}" for t, fc, g, q in filters]
-    if crossfeed:  # 轉成中(M)/側(S) → 只把低頻的側訊號變小 → 低頻互相滲一點過去，像聽喇叭
+    if crossfeed and xfeed:  # 頭部模型算的交叉饋送（每個取樣率一份）
+        lines += xfeed_lines(xfeed)
+    elif crossfeed:  # 沒有 numpy 時的舊版：轉成中(M)/側(S) → 只把低頻的側訊號變小 → 低頻互相滲一點過去，像聽喇叭
         _name, gain, fc = CROSSFEED[crossfeed]
         lines += ["Copy: L=0.5*L+0.5*R R=0.5*L+-0.5*R", "Channel: R",
                   f"Filter: ON LSC Fc {fc} Hz Gain {gain:.1f} dB Q 0.50",
@@ -1201,6 +1408,8 @@ def build_config(filters, width=0, crossfeed=0, balance=0.0, reverb_files=None, 
         lines.append(f"Copy: {side}={10 ** (-abs(balance) / 20):.4f}*{side}")
     if reverb_files:  # 殘響：直達聲＋空間反射（每個取樣率一份）
         lines += reverb_lines(reverb_files)
+    if recon:  # 最後：電腦重建濾波（只在 88.2 kHz 以上）
+        lines += recon_lines(recon)
     return "\n".join(lines) + "\n"
 
 
@@ -1734,7 +1943,7 @@ class App:
         self.fmt_lbl.pack(side="left")
         self.apply_btn = Pill(row, self, "套用", self.apply_format, size=9)
         self.apply_btn.pack(side="right")
-        self.label(c, "播放程式會把歌曲轉成這個格式。CD 音源用 44.1 的倍數\n（88.2／176.4／352.8）最單純；切換時音樂會停一下，再按播放。",
+        self.label(c, "DAC 支援就選 32-bit／352.8：電腦做重建濾波、\nEQ 高頻更準。切換時音樂會停一下，再按播放。",
                    8, SUB, justify="left").pack(anchor="w", pady=(px(6), 0))
 
         # 右：我的預設
@@ -2273,8 +2482,9 @@ class App:
         self.cur_bt = bool(dev and dev["bt"])
         cur = parse_fmt(dev["fmt"]) if dev and dev["active"] else None
         self.cur_fmt = cur[:2] if cur else None
-        if self.cur_fmt and int(self.room.get()) and self.cur_fmt[1] != getattr(self, "_ir_rate", None):
-            self.changed()  # DAC 取樣率變了 → 殘響檔換成新的取樣率
+        if self.cur_fmt and (int(self.room.get()) and self.cur_fmt[1] != getattr(self, "_ir_rate", None)
+                             or self.recon_on() != getattr(self, "_hires", False)):
+            self.changed()  # DAC 取樣率變了 → 殘響檔換成新的取樣率；跨過 88.2 kHz → 重建濾波的防破音重算
         if self.pend_fmt is None and self.cur_fmt:
             self.pend_fmt = self.cur_fmt
         self.paint_format()
@@ -2301,10 +2511,14 @@ class App:
             p.set_selected(rate == pr)
         changed = self.pend_fmt != self.cur_fmt
         self.fmt_lbl.config(text=f"目前 {self.cur_fmt[0]}-bit / {fmt_rate(self.cur_fmt[1])}"
-                                 + ("　→ 按套用" if changed else ""))
+                                 + ("　→ 按套用" if changed else "　電腦重建濾波" if self.recon_on() else ""))
         if self.apply_btn.primary != changed:
             self.apply_btn.primary = changed
             self.apply_btn.paint()
+
+    def recon_on(self):
+        """裝置在 88.2 kHz 以上 → 電腦做重建濾波"""
+        return bool(self.cur_fmt) and self.cur_fmt[1] >= RECON_MIN
 
     def apply_format(self):
         dev = find_device(self.dev_guid)
@@ -2526,15 +2740,22 @@ class App:
             if not files and not note:
                 note = "（殘響檔準備中）"
         filters, width, cf = base + style, self.width.get(), int(self.crossfeed.get())
+        xfeed, recon = {}, {}
+        try:
+            xfeed = xfeed_files(self.cfg_dir, cf) if cf else {}
+            recon = recon_files(self.cfg_dir)
+        except Exception as e:  # 沒有 numpy 或寫不進去：交叉饋送用舊版、不做重建濾波
+            note = note or f"（高解析處理做不出來：{e}）"
+        self._hires = hires = bool(recon) and self.recon_on()
         # 用滿格母帶實際算這組設定的輸出峰值。固定預留：超過就整體多降。音量優先：只預留目前設定需要的。
         # 兩種都一樣：EQ 關掉時用同一個音量，A/B 比較才公平
-        need = true_peak(filters, width, cf, room if files else 0) + SAFETY
+        need = true_peak(filters, width, cf, room if files else 0, hires) + SAFETY
         if self.loud.get():
             hr, extra = max(0.0, math.ceil(need * 2) / 2), 0.0
         else:
             hr, extra = HEADROOM, math.ceil(max(0.0, need - HEADROOM) * 10) / 10
-        text = (build_config(filters, width, cf, self.balance.get(), files, extra, headroom=hr) if on
-                else build_config([], extra=extra, headroom=hr))
+        text = (build_config(filters, width, cf, self.balance.get(), files, extra, hr, xfeed, recon) if on
+                else build_config([], extra=extra, headroom=hr, recon=recon))
         if through:  # 不寫 Preamp、不寫任何濾波器 → 訊號原封不動
             text = "# written by headphone tuner\n# passthrough: no processing\n"
         try:
