@@ -4,6 +4,8 @@
 
 ## [未發佈]
 
+## [1.7.0] - 2026-10-25
+
 ### 新增
 - 電腦版殘響改用聲學模擬的真實房間：鏡像聲源的早期反射（3–5 階、會檢查有沒有被擋住）＋顯示卡聲線追蹤的後段（每個聲源 3,355 萬條）＋頭部模型；錄音室照 ITU-R BS.1116 聆聽室、音樂廳照維也納金色大廳（含陽台、舞台）。各頻段殘響時間對上原本的數據，波峰比舊版低約 1–2 dB → 防破音少降一點音量。產生程式 `tools/殘響模擬.py`、量測結果 `殘響/結果.json`
 - 交叉饋送改用頭部模型：模擬前方 ±30° 兩顆喇叭繞過頭到另一耳的聲音（有時間差、高頻被頭擋掉），人聲這類在中間的聲音音色完全不變
@@ -61,7 +63,8 @@
 ## [1.0.0] - 2026-09-27
 - 繁體中文介面的耳機等化器，第一版
 
-[未發佈]: https://github.com/Benjaminwz/headphone-tuner/compare/v1.6.0...HEAD
+[未發佈]: https://github.com/Benjaminwz/headphone-tuner/compare/v1.7.0...HEAD
+[1.7.0]: https://github.com/Benjaminwz/headphone-tuner/releases/tag/v1.7.0
 [1.6.0]: https://github.com/Benjaminwz/headphone-tuner/releases/tag/v1.6.0
 [1.5.0]: https://github.com/Benjaminwz/headphone-tuner/releases/tag/v1.5.0
 [1.4.0]: https://github.com/Benjaminwz/headphone-tuner/releases/tag/v1.4.0
