@@ -4,6 +4,8 @@
 
 ## [未發佈]
 
+## [1.8.0] - 2026-10-27
+
 ### 新增
 - 耳機校正多一個「多源共識」（有兩份以上量測的耳機會自動算、設為推薦）：下載這支耳機在 AutoEQ 的所有量測，每個頻率跟其他份差越多的權重越低（假人頭耳廓不同的那份，高頻會被自動降權），oratory1990 多一點權重，幾份不一致的地方只校正一部分，再擬合成 12 個濾波器
 - 「個人化」（耳機校正標題右邊）：高頻校正測驗（約 5 分鐘，每題比兩個音高很接近的聲音，兩輪中間重戴耳機，只校正你耳朵特有的窄峰窄谷）、聲音偏好測驗（用你的歌盲聽 A／B 16 題，音量對齊，找出你喜歡的低音、高音量）
@@ -75,7 +77,8 @@
 ## [1.0.0] - 2026-09-27
 - 繁體中文介面的耳機等化器，第一版
 
-[未發佈]: https://github.com/Benjaminwz/headphone-tuner/compare/v1.7.0...HEAD
+[未發佈]: https://github.com/Benjaminwz/headphone-tuner/compare/v1.8.0...HEAD
+[1.8.0]: https://github.com/Benjaminwz/headphone-tuner/compare/v1.7.0...v1.8.0
 [1.7.0]: https://github.com/Benjaminwz/headphone-tuner/releases/tag/v1.7.0
 [1.6.0]: https://github.com/Benjaminwz/headphone-tuner/releases/tag/v1.6.0
 [1.5.0]: https://github.com/Benjaminwz/headphone-tuner/releases/tag/v1.5.0
