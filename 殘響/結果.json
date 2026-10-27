@@ -1,5 +1,6 @@
 {
  "device": "NVIDIA GeForce RTX 5070 Ti",
+ "rays_per_source": 4194304,
  "version": 5,
  "studio": {
   "volume_m3": 106,
@@ -14,6 +15,7 @@
    6.169,
    2.226
   ],
+  "head": "SADIE II KU100",
   "sources": [
    {
     "T30": [
@@ -31,8 +33,31 @@
     "C80_dB": 27.7,
     "D50": 0.99,
     "LF": 0.14,
-    "IACC_E": 0.26,
+    "IACC_E": 0.51,
     "max_reflection_15ms_dB": -14.2,
+    "xo_wave_vs_ray_dB": 4.2,
+    "wave_first_ms_dB": -33.5,
+    "xo_ray_rev_dB": -3.4,
+    "xo_wave_rev_dB": 0.8,
+    "diffuse_theory_dB": 6.3,
+    "ray_rev_by_band_dB": [
+     -4.2,
+     -1.2,
+     -3.7,
+     -4.5,
+     -4.9,
+     -2.2,
+     -2.5
+    ],
+    "theory_by_band_dB": [
+     6.3,
+     6.3,
+     6.3,
+     6.3,
+     6.3,
+     6.3,
+     5.8
+    ],
     "direct_check": 0.99,
     "leaks": 838,
     "paths": 218,
@@ -61,8 +86,31 @@
     "C80_dB": 28.2,
     "D50": 0.99,
     "LF": 0.14,
-    "IACC_E": 0.23,
+    "IACC_E": 0.46,
     "max_reflection_15ms_dB": -14.2,
+    "xo_wave_vs_ray_dB": 4.1,
+    "wave_first_ms_dB": -32.6,
+    "xo_ray_rev_dB": -2.4,
+    "xo_wave_rev_dB": 1.7,
+    "diffuse_theory_dB": 6.3,
+    "ray_rev_by_band_dB": [
+     1.3,
+     -0.2,
+     -3.4,
+     -5.0,
+     -2.2,
+     -1.7,
+     -3.0
+    ],
+    "theory_by_band_dB": [
+     6.3,
+     6.3,
+     6.3,
+     6.3,
+     6.3,
+     6.3,
+     5.8
+    ],
     "direct_check": 1.0,
     "leaks": 839,
     "paths": 218,
@@ -76,6 +124,69 @@
     "first_ms": 2.8
    }
   ],
+  "fdtd": [
+   {
+    "top_Hz": 421,
+    "grid_m": 0.0679,
+    "cells_M": 0.4,
+    "fs": 8750,
+    "k_lf": 0.411,
+    "T_lf_iter": [
+     [
+      0.3,
+      0.31,
+      0.27
+     ],
+     [
+      0.25,
+      0.27,
+      0.24
+     ]
+    ],
+    "seconds": 2.6
+   },
+   {
+    "top_Hz": 841,
+    "grid_m": 0.034,
+    "cells_M": 2.8,
+    "fs": 17475,
+    "k_lf": 0.368,
+    "T_lf_iter": [
+     [
+      0.15
+     ],
+     [
+      0.16
+     ],
+     [
+      0.24
+     ],
+     [
+      0.25
+     ]
+    ],
+    "seconds": 7.5
+   },
+   {
+    "top_Hz": 1682,
+    "grid_m": 0.017,
+    "cells_M": 21.2,
+    "fs": 34950,
+    "k_lf": 0.658,
+    "T_lf_iter": [
+     [
+      0.17
+     ],
+     [
+      0.24
+     ],
+     [
+      0.25
+     ]
+    ],
+    "seconds": 189.8
+   }
+  ],
   "target": [
    0.25,
    0.25,
@@ -87,7 +198,7 @@
    0.14,
    0.14
   ],
-  "seconds": 151.8,
+  "seconds": 344.4,
   "length_s": 0.3,
   "rays_per_source": 33554432
  },
@@ -104,6 +215,7 @@
    0.999,
    0.02
   ],
+  "head": "SADIE II KU100",
   "sources": [
    {
     "T30": [
@@ -121,8 +233,31 @@
     "C80_dB": -0.3,
     "D50": 0.37,
     "LF": 0.28,
-    "IACC_E": 0.25,
+    "IACC_E": 0.36,
     "max_reflection_15ms_dB": null,
+    "xo_wave_vs_ray_dB": -2.0,
+    "wave_first_ms_dB": -33.9,
+    "xo_ray_rev_dB": 7.6,
+    "xo_wave_rev_dB": 5.6,
+    "diffuse_theory_dB": 8.5,
+    "ray_rev_by_band_dB": [
+     9.7,
+     7.6,
+     8.0,
+     7.2,
+     7.4,
+     7.6,
+     7.2
+    ],
+    "theory_by_band_dB": [
+     8.5,
+     8.5,
+     8.5,
+     7.7,
+     7.7,
+     7.7,
+     6.5
+    ],
     "direct_check": 1.0,
     "leaks": 448,
     "paths": 63,
@@ -150,8 +285,31 @@
     "C80_dB": -0.3,
     "D50": 0.37,
     "LF": 0.28,
-    "IACC_E": 0.27,
+    "IACC_E": 0.32,
     "max_reflection_15ms_dB": null,
+    "xo_wave_vs_ray_dB": -2.1,
+    "wave_first_ms_dB": -33.7,
+    "xo_ray_rev_dB": 7.7,
+    "xo_wave_rev_dB": 5.6,
+    "diffuse_theory_dB": 8.5,
+    "ray_rev_by_band_dB": [
+     9.8,
+     7.5,
+     7.7,
+     7.4,
+     7.4,
+     7.3,
+     7.2
+    ],
+    "theory_by_band_dB": [
+     8.5,
+     8.5,
+     8.5,
+     7.7,
+     7.7,
+     7.7,
+     6.5
+    ],
     "direct_check": 1.02,
     "leaks": 440,
     "paths": 63,
@@ -164,6 +322,40 @@
     "first_ms": 18.5
    }
   ],
+  "fdtd": {
+   "grid_m": 0.0733,
+   "cells_M": 40.2,
+   "fs": 8106,
+   "k_lf": 0.728,
+   "T_lf_iter": [
+    [
+     3.9,
+     3.62,
+     3.09
+    ],
+    [
+     3.26,
+     2.98,
+     2.63
+    ],
+    [
+     2.86,
+     2.61,
+     2.46
+    ],
+    [
+     2.66,
+     2.44,
+     2.39
+    ],
+    [
+     2.57,
+     2.36,
+     2.37
+    ]
+   ],
+   "seconds": 1017.1
+  },
   "target": [
    2.4,
    2.4,
@@ -175,7 +367,7 @@
    0.9,
    0.9
   ],
-  "seconds": 514.9,
+  "seconds": 1894.4,
   "length_s": 2.67,
   "rays_per_source": 33554432
  },
@@ -192,6 +384,7 @@
    0.989,
    0.02
   ],
+  "head": "SADIE II KU100",
   "sources": [
    {
     "T30": [
@@ -211,6 +404,29 @@
     "LF": 0.22,
     "IACC_E": 0.21,
     "max_reflection_15ms_dB": -3.6,
+    "xo_wave_vs_ray_dB": -2.3,
+    "wave_first_ms_dB": -45.2,
+    "xo_ray_rev_dB": 12.1,
+    "xo_wave_rev_dB": 9.8,
+    "diffuse_theory_dB": 13.5,
+    "ray_rev_by_band_dB": [
+     13.4,
+     10.9,
+     12.5,
+     10.8,
+     10.9,
+     11.1,
+     11.0
+    ],
+    "theory_by_band_dB": [
+     13.5,
+     13.5,
+     13.5,
+     12.7,
+     12.7,
+     12.7,
+     11.5
+    ],
     "direct_check": 1.0,
     "leaks": 483,
     "paths": 61,
@@ -238,8 +454,31 @@
     "C80_dB": -2.1,
     "D50": 0.25,
     "LF": 0.22,
-    "IACC_E": 0.22,
+    "IACC_E": 0.21,
     "max_reflection_15ms_dB": -3.6,
+    "xo_wave_vs_ray_dB": -1.9,
+    "wave_first_ms_dB": -45.2,
+    "xo_ray_rev_dB": 11.7,
+    "xo_wave_rev_dB": 9.8,
+    "diffuse_theory_dB": 13.5,
+    "ray_rev_by_band_dB": [
+     13.6,
+     11.3,
+     11.7,
+     10.7,
+     10.7,
+     10.9,
+     10.6
+    ],
+    "theory_by_band_dB": [
+     13.5,
+     13.5,
+     13.5,
+     12.7,
+     12.7,
+     12.7,
+     11.5
+    ],
     "direct_check": 1.0,
     "leaks": 459,
     "paths": 61,
@@ -252,6 +491,45 @@
     "first_ms": 11.9
    }
   ],
+  "fdtd": {
+   "grid_m": 0.0733,
+   "cells_M": 40.2,
+   "fs": 8106,
+   "k_lf": 0.725,
+   "T_lf_iter": [
+    [
+     3.74,
+     3.2,
+     2.98
+    ],
+    [
+     3.19,
+     2.88,
+     2.74
+    ],
+    [
+     2.78,
+     2.62,
+     2.64
+    ],
+    [
+     2.57,
+     2.46,
+     2.61
+    ],
+    [
+     2.48,
+     2.38,
+     2.59
+    ],
+    [
+     2.42,
+     2.34,
+     2.59
+    ]
+   ],
+   "seconds": 886.6
+  },
   "target": [
    2.4,
    2.4,
@@ -263,7 +541,7 @@
    0.9,
    0.9
   ],
-  "seconds": 496.4,
+  "seconds": 1389.0,
   "length_s": 2.67,
   "rays_per_source": 33554432
  }

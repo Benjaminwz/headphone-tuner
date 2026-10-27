@@ -2,6 +2,7 @@
 """耳機調音台（通用版）：用中文介面調 Equalizer APO。任何耳機、任何輸出裝置都能用。
 耳機校正從 AutoEQ 資料庫下載（目標 Harman）；改動會即時寫進 Equalizer APO 的設定檔，關掉視窗仍然有效。
 測試用：加上 --config-dir <資料夾> 可以改寫別的設定資料夾，不會動到真正的音效設定。"""
+import base64
 import cmath
 import ctypes
 import ctypes.wintypes
@@ -10,6 +11,7 @@ import json
 import math
 import os
 import queue
+import random
 import re
 import struct
 import sys
@@ -20,6 +22,8 @@ import tkinter.font as tkfont
 import urllib.parse
 import urllib.request
 import uuid
+import subprocess
+import zlib
 import winreg
 from datetime import datetime
 from tkinter import filedialog, messagebox, simpledialog, ttk
@@ -110,10 +114,13 @@ def set_headphone(hp):
     srcs = (hp or {}).get("sources") or []
     _ESTIMATE = (hp or {}).get("name") in ESTIMATED  # 推估的型號：各份都是兄弟機的量測，平均才最接近，所以推薦平均
     BASES.clear()
+    cons = None if _ESTIMATE else (hp or {}).get("consensus")
+    if cons:  # 所有量測的加權共識（App.start_consensus 背景算好存在 hp 裡）
+        BASES["consensus"] = (f"多源共識（{cons[0]} 份，推薦）", [tuple(f) for f in cons[1]])
     for key, (label, fl) in zip(("autoeq", "src2", "src3"), srcs):
-        rec = key == "autoeq" and not _ESTIMATE
+        rec = key == "autoeq" and not _ESTIMATE and not cons
         BASES[key] = (f"{label}（推薦）" if rec else f"{label} 量測", [tuple(f) for f in fl])
-    if len(srcs) >= 2:  # 每個濾波器增益 ÷ 份數疊起來 ≈ 各條校正曲線（dB）的平均，比較不會被單一量測設備帶偏
+    if len(srcs) >= 2 and not cons:  # 每個濾波器增益 ÷ 份數疊起來 ≈ 各條校正曲線（dB）的平均，比較不會被單一量測設備帶偏
         BASES["avg"] = ("多份平均（推薦）" if _ESTIMATE else "多份平均（最不偏）",
                         [(t, f, g / len(srcs), q) for _l, fl in srcs for t, f, g, q in fl])
     BASES["none"] = ("不校正（耳機原味）", [])
@@ -123,6 +130,8 @@ _ESTIMATE = False
 
 
 def default_base():
+    if "consensus" in BASES:
+        return "consensus"
     if _ESTIMATE and "avg" in BASES:
         return "avg"
     return "autoeq" if "autoeq" in BASES else "none"
@@ -141,6 +150,11 @@ BANDS = [
 RESEARCH = [
     ("只校正", [0, 0, 0, 0, 0], 0, 0,
      "Harman 2018 目標：盲聽測試中 64% 聽眾的首選（Olive, Acoustics Today 2022）"),
+    ("解析度", [-1.5, -1, 0, 0, 0], 10, 0,
+     "細節聽不清楚主要是被遮蔽（masking），不是頻寬不夠：低音大聲時會往上遮住中高頻的小聲音（遮蔽向上擴散，Zwicker & Fastl"
+     "《Psychoacoustics》）→ 低頻 −1.5、厚度 −1，仍在 Harman 偏好範圍內；高頻不加：靠加高頻得到的「細節」是假的，"
+     "只會讓齒音和錄音失真更明顯；不加殘響、不交叉饋送：殘響會降低清晰度指標（C80、D50，ISO 3382）；"
+     "樂器在空間上分得越開越容易各自聽清楚（空間遮蔽釋放，Bronkhorst 2000, Acta Acustica）→ 寬度 10%，搭配「分離度：強」"),
     ("多低音族群", [4, 0, 0, 0, 0], 0, 0,
      "15% 聽眾偏好比 Harman 多 4–6 dB 低音（同上研究；取 4 dB 以免破音）"),
     ("少低音族群", [-2, 0, 0, 0, 0], 0, 0,
@@ -229,6 +243,10 @@ ROCK = [  # 搖滾細分：依年代／子類；響度差是實測一份約 1,50
      "輕度交叉饋送；不加殘響（錄音裡本來就有自己的空間）"),
 ]
 STAGE = [
+    ("驚艷試聽", [3, -0.5, 0, -1.5, 2], 35, 4,
+     "第一次聽就有感：低頻 +3、高頻 +2 的微笑曲線（第一印象最討喜），厚度 −0.5 讓低音不糊；臨場感 −1.5 壓掉加高頻後容易刺耳的齒音；"
+     "虛擬喇叭（聲音在前方，喇叭模式已含錄音室反射 → 不另加殘響）＋寬度 35%：開闊但不像音樂廳那樣有長殘響。"
+     "搭配「分離度：強」效果最明顯；長時間聽可能會累"),
     ("錄音室監聽", [0, 0, 0, 0, 0], 0, 2,
      "ITU-R BS.1116 標準聆聽室殘響 0.25 秒＋bs2b 交叉饋送；房間反射能讓聲音到頭外（Catic 2015, JASA）"),
     ("音樂廳前排", [0, 0, 0, 0, 0], 0, 1,
@@ -300,6 +318,8 @@ CHEAP = [(n, v, 0, 0, s) for n, v, s in (
 # 白話介紹：聽起來怎樣＋適合聽什麼（聽感依曲線描述；「適合」是一般聆聽經驗，不是研究結論）
 PLAIN = {
     "只校正": "最平衡、最多人喜歡的標準聲音。什麼音樂都適合（流行、搖滾、華語、K-pop 就用這個）",
+    "解析度": "細節最清楚：低音收一點、不加殘響，樂器拉開。搭配「分離度：強」。適合聽錄音細節、古典、爵士",
+    "驚艷試聽": "一聽就有感：低音更有力、高音更亮，聲音在前方又很開闊。搭配「分離度：強」。適合展示、短時間聽",
     "多低音族群": "低音更飽、更有衝擊力。適合流行、電子、嘻哈",
     "少低音族群": "低音收一點，清爽乾淨。適合人聲、民謠、長時間聽",
     "女性聽眾偏好": "低音、高音都柔一點，比較溫和。適合抒情、輕音樂",
@@ -394,7 +414,7 @@ HEADROOM = 11.0
 # 耳機交叉饋送（bs2b 三組標準參數）：名稱, 低頻側訊號衰減 dB, 轉折頻率 Hz
 # 輕＝Jan Meier（650 Hz / 9.5 dB）、中＝Chu Moy（700 Hz / 6 dB）、強＝bs2b 預設（700 Hz / 4.5 dB）
 # 現在只取它們的低頻分離度（9.6／6.0／4.5 dB），頻率響應和時間差改用頭部模型精確計算（xfeed_tf）；沒有 numpy 時才用這裡的中/側濾波
-CROSSFEED = [("關", 0.0, 700), ("輕", -6.0, 650), ("中", -9.6, 700), ("強", -11.9, 700)]
+CROSSFEED = [("關", 0.0, 700), ("輕", -6.0, 650), ("中", -9.6, 700), ("強", -11.9, 700), ("喇叭", -11.9, 700)]
 # 殘響空間：名稱, 中頻殘響 RT60(秒), 低頻比, 高頻比, 首次反射 ITDG(ms), 直達/殘響比 DRR(dB), 檔名
 ROOMS = [("關", 0, 0, 0, 0, 0, ""),
          ("錄音室", 0.25, 1.0, 0.9, 3, 10, "studio"),         # ITU-R BS.1116 標準聆聽室
@@ -409,12 +429,12 @@ REVERB_RATES = (44100, 48000, 88200, 96000, 176400, 192000)  # 這些取樣率�
 # ＋剛性球頭部模型），存在「殘響」資料夾；殘響時間照 ROOMS，直達/殘響比在這裡縮放。
 # 沒有那個檔（或讀不了）就用 room_ir 裡的簡化版（v3，itdg 只在那裡用）
 REVERB_DIR = os.path.join(APP_DIR, "殘響")
-MASTER_FS = 48000  # 模擬檔的取樣率：只有 20 kHz 以下的聲音，48 kHz 就完整保存
+MASTER_FS = 96000  # 模擬檔的取樣率（跟 tools/殘響模擬.py 算的一樣，不另外轉）
 _MASTERS = {}
 
 
 def room_master(key):
-    """這個房間模擬好的殘響（48 kHz、4 聲道、只有殘響、每個聲源兩耳總能量＝1）→ (陣列, 版本) 或 None"""
+    """這個房間模擬好的殘響（96 kHz、4 聲道、只有殘響、每個聲源兩耳總能量＝1）→ (陣列, 版本) 或 None"""
     path = os.path.join(REVERB_DIR, f"{key}.npy")
     try:
         tag = f"{int(os.path.getmtime(path)) % 65536:04x}"  # 模擬檔更新過 → 檔名跟著換，Equalizer APO 才會讀新的
@@ -505,7 +525,28 @@ def minphase(mag):
 # 取代原本只把低頻左右混一點、沒有時間差的中/側濾波。輕／中／強 照原本的低頻左右分離度（9.6／6.0／4.5 dB），
 # 再補償成「左右一樣的聲音（人聲、貝斯）總響應平直」→ 音色不變，只有左右分很開的聲音被拉回前方
 XF_EAR, XF_SPK = 100, 30  # 耳朵在正前方左右 100°、喇叭在 ±30°
-_XF = {}
+_XF, _ITF = {}, []
+# v3：有真人頭部量測（SADIE II 資料庫的 Neumann KU100 假人頭，University of York，Apache 2.0；殘響\hrtf30.npy＝
+# 左前 30° 喇叭到同側耳、對側耳）就用量測的兩耳傳遞函數（有耳廓，比球形頭準），沒有才用剛性球模型
+HRTF30 = os.path.join(REVERB_DIR, "hrtf30.npy")
+
+
+def measured_itf():
+    """量測的兩耳傳遞函數（對側／同側）→ (96 kHz 脈衝響應, 往前挪的取樣數) 或 None"""
+    if not _ITF:
+        try:
+            import numpy as np
+            hi, hc = np.load(HRTF30).astype(float)
+            n, pre, keep = 1 << 14, 64, 512
+            Hi, Hc = np.fft.rfft(hi, n), np.fft.rfft(hc, n)
+            itf = Hc * np.conj(Hi) / (np.abs(Hi) ** 2 + 1e-3 * (np.abs(Hi) ** 2).max())  # 同側有凹陷的地方不會爆掉
+            ir = np.roll(np.fft.irfft(itf, n), pre)[:keep]
+            ir[:16] *= np.sin(np.linspace(0, np.pi / 2, 16)) ** 2
+            ir[-64:] *= np.cos(np.linspace(0, np.pi / 2, 64)) ** 2
+            _ITF.append((ir, pre))
+        except (ImportError, OSError, ValueError):
+            _ITF.append(None)
+    return _ITF[0]
 
 
 def xfeed_tf(level, f):
@@ -515,8 +556,16 @@ def xfeed_tf(level, f):
         import numpy as np
         g = 10 ** (CROSSFEED[level][1] / 20)
         c = (1 - g) / (1 + g)  # 低頻的對側量：跟原本的中/側濾波低頻分離度一樣
-        H = sphere(f, np.radians([XF_EAR - XF_SPK, XF_EAR + XF_SPK]))
-        itf = H[1] / H[0]
+        m = measured_itf()
+        if m:
+            ir, pre = m
+            itf = np.exp(-2j * np.pi * np.outer(f, np.arange(len(ir)) - pre) / 96000) @ ir
+            itf *= np.clip((20000 - f) / 2000, 0, 1) ** 2  # 量測只到 20 kHz，以上不串音
+            # 量測在 100 Hz 也有約 1.4 dB 的兩耳差 → 對側量照比例放大，低頻左右分離度才會跟原本一樣
+            c /= abs(np.exp(-2j * np.pi * 100 * (np.arange(len(ir)) - pre) / 96000) @ ir)
+        else:
+            H = sphere(f, np.radians([XF_EAR - XF_SPK, XF_EAR + XF_SPK]))
+            itf = H[1] / H[0]
         eq = minphase(1 / np.abs(1 + c * itf))  # 左右一樣的聲音：同側＋對側剛好平直
         _XF[key] = (eq, eq * c * itf)
     return _XF[key]
@@ -526,8 +575,9 @@ def xfeed_files(cfg_dir, level):
     """每個取樣率一份交叉饋送檔（4 聲道：L、R 的同側，XL、XR 的對側）→ {取樣率: 檔名}"""
     import numpy as np
     out = {}
+    ver = "v3" if measured_itf() else "v2"
     for rate in RATES:
-        name = f"xfeed_v2_{level}_{rate}.wav"
+        name = f"xfeed_{ver}_{level}_{rate}.wav"
         path = os.path.join(cfg_dir, name)
         if not os.path.exists(path):
             n = 1 << max(10, math.ceil(math.log2(rate * 0.04)))
@@ -538,6 +588,90 @@ def xfeed_files(cfg_dir, level):
             write_wav(path, np.stack([hs, hs, hx, hx], 1) * fade[:, None], rate)
         out[rate] = name
     return out
+
+
+# 虛擬喇叭（交叉饋送最右邊一格「喇叭」）：tools/殘響模擬.py 在 BS.1116 標準聆聽室裡擺一對 ±30° 的喇叭，
+# 算出兩顆喇叭到兩耳的直達聲（經過頭部量測）＋每一道反射（殘響\studio_spk.npy），4 聲道跟交叉饋送檔一樣
+SPEAKER = 4
+_SPK = {}
+
+
+def smooth_third(mag):
+    """1/3 八度平滑（能量平均），mag 是 rfft 頻率格上的大小"""
+    import numpy as np
+    cs = np.concatenate([[0], np.cumsum(mag ** 2)])
+    i = np.arange(len(mag))
+    lo = np.floor(i / 2 ** (1 / 6)).astype(int)
+    hi = np.minimum(np.ceil(i * 2 ** (1 / 6)).astype(int) + 1, len(mag))
+    return np.sqrt((cs[hi] - cs[lo]) / np.maximum(hi - lo, 1))
+
+
+def speaker_ir(rate):
+    """虛擬喇叭（4 聲道：左→左、右→右、左→右、右→左）。補償成「左右一樣的聲音」總響應平直
+    （1/3 八度平滑，最多 ±12 dB）→ 人聲音色不變，只有方向和空間感改變 → (陣列, 版本) 或 None"""
+    master = room_master("studio_spk")
+    if master is None:
+        return None
+    key = (rate, master[1])
+    if key not in _SPK:
+        import numpy as np
+        x = _resample(master[0], rate)
+        m = len(x) + rate // 50
+        n = 1 << (2 * m - 1).bit_length()
+        X = np.fft.rfft(x, n, axis=0)
+        f = np.fft.rfftfreq(n, 1 / rate)
+        mono = np.sqrt((np.abs(X[:, 0] + X[:, 3]) ** 2 + np.abs(X[:, 1] + X[:, 2]) ** 2) / 2)
+        inv = 1 / np.maximum(smooth_third(mono), 1e-9)
+        lo, hi = np.searchsorted(f, 20), np.searchsorted(f, 20000)
+        inv[:lo], inv[hi:] = inv[lo], inv[hi - 1]  # 20 Hz–20 kHz 以外不另外補
+        y = np.fft.irfft(X * minphase(np.clip(inv, 0.25, 4))[:, None], n, axis=0)[:m]
+        y[-rate // 100:] *= np.cos(np.linspace(0, np.pi / 2, rate // 100))[:, None] ** 2
+        _SPK.clear()
+        _SPK[key] = y
+    return _SPK[key], master[1]
+
+
+def spk_files(cfg_dir):
+    """每個取樣率一份虛擬喇叭檔 → {取樣率: 檔名}；沒有模擬檔 → {}"""
+    out = {}
+    tag = room_master("studio_spk")
+    if tag is None:
+        return out
+    for rate in RATES:
+        name = f"spk_v1{tag[1]}_{rate}.wav"
+        if not os.path.exists(os.path.join(cfg_dir, name)):
+            write_wav(os.path.join(cfg_dir, name), speaker_ir(rate)[0], rate)
+        out[rate] = name
+    return out
+
+
+# 分離度：Equalizer APO 直接載入的 VST 外掛（分離度引擎\sep_v1.dll，原始碼 sep.cpp，MIT）。每個頻率（約 21 ms 的
+# 短時傅立葉）把左右分成「主要的聲音」和環境音，靠中間的樂器往兩邊拉開、加上對應的兩耳時間差；人聲、正中間和最左右的不動，
+# 環境音、殘響不動。延遲約 23 ms；強度 0 跟原音逐位元一樣
+SEP_DLL = os.path.join(APP_DIR, "分離度引擎", "sep_v1.dll")
+SEP_LEVELS = [("關", 0.0), ("輕", 0.35), ("中", 0.6), ("強", 0.9)]
+SEP_MARGIN = 1.0  # 拉開時峰值最多多約 0.2 dB，多留一點
+
+
+def sep_file(cfg_dir):
+    """把外掛複製到 Equalizer APO 的設定資料夾（音訊服務讀得到）；檔名帶內容雜湊 → 更新時不會撞到正在用的舊檔"""
+    try:
+        with open(SEP_DLL, "rb") as fh:
+            data = fh.read()
+    except OSError:
+        return None
+    name = f"sep_{zlib.crc32(data):08x}.dll"
+    path = os.path.join(cfg_dir, name)
+    if not os.path.exists(path):
+        with open(path + ".tmp", "wb") as fh:
+            fh.write(data)
+        os.replace(path + ".tmp", path)
+    return name
+
+
+def sep_lines(cfg_dir, name, strength):
+    chunk = base64.b64encode(f"strength={strength:.3f}".encode()).decode()
+    return [f'VSTPlugin: Library "{os.path.join(cfg_dir, name)}" ChunkData "{chunk}"']
 
 
 def xfeed_lines(files):
@@ -675,7 +809,10 @@ def cleanup_reverb(cfg_dir, keep):
     for fn in os.listdir(cfg_dir):
         if fn.endswith(".tmp") and time.time() - os.path.getmtime(os.path.join(cfg_dir, fn)) < 600:
             continue
-        if fn.startswith("reverb_") and fn not in keep:
+        spk = room_master("studio_spk")
+        old_spk = fn.startswith("spk_") and fn not in keep and not (spk and fn.startswith(f"spk_v1{spk[1]}_"))
+        old_sep = fn.startswith("sep_") and fn.endswith(".dll") and fn not in keep  # 舊版外掛（還在用的刪不掉，下次再刪）
+        if (fn.startswith("reverb_") and fn not in keep) or old_spk or old_sep:
             try:
                 os.remove(os.path.join(cfg_dir, fn))
             except OSError:
@@ -767,20 +904,25 @@ def true_peak(filters, width=0, crossfeed=0, room=0, recon=False):
     if room and room not in _IRS:
         _IRS[room] = room_ir(room, 48000)  # 算峰值用的 48 kHz 殘響
     ir = _IRS[room] if room else None
-    n = len(sigs[0][0]) + (len(ir) if ir is not None else 0) + 24000
+    spk = speaker_ir(48000) if crossfeed == SPEAKER else None
+    n = len(sigs[0][0]) + (len(ir) if ir is not None else 0) + (len(spk[0]) if spk else 0) + 24000
     nfft = 1 << (n - 1).bit_length()
     f = np.fft.rfftfreq(nfft, 1 / 48000)
     he = _H(np, filters, f)
     k = width / 100
-    a, b = xfeed_tf(crossfeed, f) if crossfeed else (1, 0)  # 交叉饋送：同側、對側
+    a, b = xfeed_tf(crossfeed, f) if crossfeed and not spk else (1, 0)  # 交叉饋送：同側、對側
     lp = recon_lp(f) if recon else None
     ll, lr = he * ((1 + k) * a - k * b), he * ((1 + k) * b - k * a)  # 再加上寬度
     if ir is not None:
         r = np.fft.rfft(ir, nfft, axis=0)
+    if spk:
+        sp = np.fft.rfft(spk[0], nfft, axis=0)
     peak = 0.0
     for s1, s2 in zip(*sigs):
         X1, X2 = np.fft.rfft(s1, nfft), np.fft.rfft(s2, nfft)
         for xl, xr in ((X1, X1), (X1, -X1), (X1, X2)):  # 左右相同、左右反相、左右不同樂器
+            if spk:  # 虛擬喇叭（4 聲道）在寬度之前
+                xl, xr = sp[:, 0] * xl + sp[:, 3] * xr, sp[:, 1] * xr + sp[:, 2] * xl
             yl, yr = ll * xl + lr * xr, lr * xl + ll * xr
             if ir is not None:
                 yl, yr = r[:, 0] * yl + r[:, 3] * yr, r[:, 1] * yr + r[:, 2] * yl
@@ -1386,13 +1528,275 @@ def _analyze_tidal():
     return mine, plain
 
 
+def k_weight_db(f, fs=48000.0):
+    """ITU-R BS.1770 的 K 加權（響度量測標準用的耳朵權重）在頻率 f 的增益（dB）"""
+    z = cmath.exp(-2j * math.pi * f / fs)
+    h1 = (1.53512485958697 - 2.69169618940638 * z + 1.19839281085285 * z * z) / \
+         (1 - 1.69065929318241 * z + 0.73248077421585 * z * z)
+    h2 = (1 - 2 * z + z * z) / (1 - 1.99004745483398 * z + 0.99007225036621 * z * z)
+    return 20 * math.log10(abs(h1 * h2))
+
+
+_K_WEIGHT = []
+
+
+def loudness_db(filters):
+    """粉紅噪音經過這組濾波器後的響度（K 加權，dB，只拿來互相比較）"""
+    if not _K_WEIGHT:
+        _K_WEIGHT.extend(k_weight_db(f) for f in FREQS)
+    return 10 * math.log10(sum(10 ** ((c + k) / 10) for c, k in zip(curve(filters), _K_WEIGHT)) / len(FREQS))
+
+
+# ---------------------------------------------------------------- 多源共識
+# 同一支耳機在 AutoEQ 裡常有好幾份量測（不同設備、不同單位）。每份都是「對自己設備的目標曲線差多少」（error_smoothed），
+# 所以可以直接比：每個頻率跟其他份差越多的權重越低（某一份的假人頭耳廓不同時，高頻會被自動降權）；oratory1990 多一點權重
+# （Harman 目標當初用的設備）；幾份不一致的地方只校正一部分；8 kHz 以上再平滑、限制幅度（量測最不可靠、每個人耳朵也差最多）
+CONS_PRIOR = {"oratory1990": 1.5}
+
+
+def _peq_resp(np, fl, f, fs):
+    """參數等化的頻率響應（dB，不取整數，擬合用）"""
+    H = np.ones(len(f), complex)
+    z = np.exp(-2j * np.pi * f / fs)
+    for kind, fc, g, q in fl:
+        A = 10 ** (g / 40)
+        w0 = 2 * np.pi * fc / fs
+        c, al = np.cos(w0), np.sin(w0) / (2 * q)
+        if kind == "PK":
+            b, a = (1 + al * A, -2 * c, 1 - al * A), (1 + al / A, -2 * c, 1 - al / A)
+        else:
+            sq = 2 * np.sqrt(A) * al
+            if kind == "LSC":
+                b = (A * ((A + 1) - (A - 1) * c + sq), 2 * A * ((A - 1) - (A + 1) * c), A * ((A + 1) - (A - 1) * c - sq))
+                a = ((A + 1) + (A - 1) * c + sq, -2 * ((A - 1) + (A + 1) * c), (A + 1) + (A - 1) * c - sq)
+            else:
+                b = (A * ((A + 1) + (A - 1) * c + sq), -2 * A * ((A - 1) + (A + 1) * c), A * ((A + 1) + (A - 1) * c - sq))
+                a = ((A + 1) - (A - 1) * c + sq, 2 * ((A - 1) - (A + 1) * c), (A + 1) - (A - 1) * c - sq)
+        H *= (b[0] + b[1] * z + b[2] * z * z) / (a[0] + a[1] * z + a[2] * z * z)
+    return 20 * np.log10(np.abs(H))
+
+
+def fit_peq(np, F, T, n_pk=10, fs=48000.0):
+    """把校正曲線 T（dB，頻率 F）擬合成低架 105 Hz＋高架 10 kHz＋n_pk 個峰值濾波器（Levenberg-Marquardt，
+    一次加一個；增益越小越好 → 濾波器不會互相抵消）"""
+    w = np.where(F <= 10000, 1.0, 0.5) * (F >= 20)
+
+    def unpack(x, kinds):
+        fl, i = [], 0
+        for kind in kinds:
+            if kind != "PK":
+                fl.append((kind, 105.0 if kind == "LSC" else 10000.0, x[i], 0.7))
+                i += 1
+            else:
+                fl.append(("PK", 2 ** x[i], x[i + 1], 2 ** x[i + 2]))
+                i += 3
+        return fl
+
+    def clampx(x, kinds):
+        i = 0
+        for kind in kinds:
+            if kind != "PK":
+                x[i] = np.clip(x[i], -8, 8)
+                i += 1
+            else:
+                x[i] = np.clip(x[i], np.log2(20), np.log2(16000))
+                x[i + 1] = np.clip(x[i + 1], -9, 9)
+                x[i + 2] = np.clip(x[i + 2], np.log2(0.2), np.log2(6))
+                i += 3
+        return x
+
+    def res(x, kinds):
+        fl = unpack(x, kinds)
+        return np.concatenate([(_peq_resp(np, fl, F, fs) - T) * w, 0.6 * np.array([g for _k, _f, g, _q in fl])])
+
+    def lm(x, kinds):
+        lam, r = 1e-2, res(x, kinds)
+        cost = (r ** 2).sum()
+        for _ in range(40):
+            J = np.stack([(res(x + e, kinds) - r) / 1e-4 for e in np.eye(len(x)) * 1e-4], 1)
+            A, g = J.T @ J, J.T @ r
+            while True:
+                xn = clampx(x - np.linalg.solve(A + lam * np.diag(np.diag(A) + 1e-9), g), kinds)
+                rn = res(xn, kinds)
+                if (rn ** 2).sum() < cost:
+                    x, r, cost, lam = xn, rn, (rn ** 2).sum(), lam / 3
+                    break
+                lam *= 4
+                if lam > 1e8:
+                    return x
+        return x
+
+    kinds = ["LSC", "HSC"]
+    x = lm(np.zeros(2), kinds)
+    for _ in range(n_pk):
+        sm = np.convolve((T - _peq_resp(np, unpack(x, kinds), F, fs)) * w, np.ones(5) / 5, "same")
+        i = int(np.argmax(np.abs(sm) * (F <= 16000)))
+        kinds.append("PK")
+        x = lm(np.append(x, [np.log2(F[i]), sm[i], np.log2(1.4)]), kinds)
+    return [(k, int(round(fc)), round(float(g), 1), round(float(q), 2)) for k, fc, g, q in unpack(x, kinds)
+            if abs(g) >= 0.1]
+
+
+def consensus_fit(entries):
+    """這支耳機所有量測 → 加權共識 → 參數等化 → [份數, 濾波器] 或 None（不到兩份、沒有 numpy、下載失敗）"""
+    import csv
+    import io as _io
+    try:
+        import numpy as np
+    except ImportError:
+        return None
+    F = np.geomspace(20, 20000, 400)  # 每八度 40 點
+    lf = np.log2(F)
+    E, prior, seen = [], [], set()
+    for src, link in entries:
+        if link in seen or len(E) >= 8:
+            continue
+        seen.add(link)
+        leaf = urllib.parse.unquote(link.rsplit("/", 1)[-1])
+        try:
+            with urllib.request.urlopen(AUTOEQ_RAW + link + "/" + urllib.parse.quote(leaf + ".csv"), timeout=30) as r:
+                rows = list(csv.DictReader(_io.StringIO(r.read().decode("utf-8", "replace"))))
+            f = np.array([float(x["frequency"]) for x in rows])
+            e = np.array([float(x["error_smoothed"]) for x in rows])
+        except Exception:
+            continue
+        E.append(np.interp(lf, np.log2(f), e))
+        prior.append(CONS_PRIOR.get(src.split("（")[0], 1.0))
+    if len(E) < 2:
+        return None
+    E = np.array(E)
+
+    def smooth(X, oct_):
+        return np.array([[row[np.abs(lf - lf[i]) <= oct_ / 2].mean() for i in range(len(F))] for row in X])
+    R = np.array([E[s] - np.median(np.delete(E, s, 0), 0) for s in range(len(E))])  # 跟其他份的中位數差多少
+    W = np.array(prior)[:, None] / (1.0 + smooth(R ** 2, 1 / 3))
+    W /= W.sum(0)
+    mean = (W * E).sum(0)
+    se = np.sqrt((W * (E - mean) ** 2).sum(0) * (W ** 2).sum(0))  # 加權標準差 ÷ √有效份數
+    corr = -mean / (1 + (se / 2.0) ** 2)  # 不確定的地方校正少一點
+    x = np.clip((lf - np.log2(6000)) / (np.log2(8000) - np.log2(6000)), 0, 1)
+    corr = corr * (1 - x) + smooth(corr[None], 0.5)[0] * x
+    corr = np.where(F >= 10000, np.clip(corr, -6, 4), corr)
+    return [len(E), [list(fl) for fl in fit_peq(np, F, corr)]]
+
+
+# ---------------------------------------------------------------- 個人化：高頻校正、聲音偏好
+# 高頻校正：3–10 kHz 的耳道共振、耳機跟耳朵的距離每個人都不一樣（個人差異可到 ±5 dB），量測用的假人頭抓不到。
+# - 每題比相鄰兩個頻率（差 1/6 八度，音高很接近）：只比大小聲，誤差約 1 dB；跨好幾個八度比要 2–3 dB
+# - 從 2.7 kHz 一格一格比到 12 kHz，再反方向比回來；兩個方向應該剛好相反，差多少就是這次測驗的誤差
+# - 兩輪中間拿下耳機重戴：高頻會隨耳機在頭上的位置（入耳式是塞的深度）變好幾 dB → 重戴後還在的才是耳朵本身的峰谷
+# - 只校正「跟平滑趨勢不一樣的窄峰窄谷」：整體高頻多寡是等響曲線加個人喜好（交給細調）；頭尾兩格只當起點終點
+HF_BANDS = [round(3000 * 2 ** (i / 6)) for i in range(-1, 13)]  # 2.7–12 kHz，1/6 八度一格
+HF_FREQS = HF_BANDS[1:-1]  # 會校正的：3–10.7 kHz
+HF_Q = 4.3  # 頻寬約 1/3 八度：相鄰兩格重疊，接起來是平滑曲線
+
+
+def hf_burst(np, fc, sr, sec=0.4):
+    """以 fc 為中心、1/6 八度寬的噪音（邊緣用餘弦收尾），RMS＝1，前後 20 ms 淡入淡出"""
+    n = int(sr * sec)
+    f = np.fft.rfftfreq(n, 1 / sr)
+    d = np.abs(np.log2(np.maximum(f, 1) / fc))
+    mask = np.where(d <= 1 / 12, 1.0, np.cos(np.clip(d - 1 / 12, 0, 1 / 24) * 12 * np.pi) ** 2)
+    x = np.fft.irfft(np.fft.rfft(np.random.default_rng().standard_normal(n)) * mask, n)
+    x /= np.sqrt((x ** 2).mean())
+    fade = np.minimum(1, np.minimum(np.arange(n), n - 1 - np.arange(n)) / (sr * 0.02))
+    return x * fade
+
+
+def hf_clip(np, ref, test, gain_db, level=0.06, sr=48000):
+    """第一個聲音 → 0.15 秒空白 → 第二個聲音（加 gain_db）→ 0.5 秒空白，兩耳一樣；約 -24 dBFS"""
+    gap = lambda s: np.zeros(int(sr * s))
+    x = np.concatenate([ref, gap(0.15), test * 10 ** (gain_db / 20), gap(0.5)]) * level
+    return np.column_stack([x, x]).astype("float32")
+
+
+def hf_analyze(up, down):
+    """up[j]：第 j+1 格要加幾 dB 才跟第 j 格一樣大聲；down[j]：第 j 格要加幾 dB 才跟第 j+1 格一樣大聲
+    → (HF_FREQS 每個頻率的校正 dB, 濾波器, 每次判斷的誤差 dB)"""
+    import numpy as np
+    u, w = np.array(up, float), np.array(down, float)
+    s = (u - w) / 2  # 相鄰兩格差多少（兩個方向平均）
+    sig2 = max(((u + w) ** 2).mean() / 2, 0.25)  # 每次判斷的誤差（變異數），至少當 0.5 dB
+    m = np.r_[0, np.cumsum(s)]  # 每一格要加幾 dB 才跟起點一樣大聲＝你的耳朵這裡比較小聲多少 → 補
+    x = np.log2(np.array(HF_BANDS, float) / 1000)
+    n = len(x)
+    wt = np.ones(n)
+    for _ in range(6):  # 平滑趨勢：偏離大的點權重降低，窄峰窄谷才不會被趨勢吃掉
+        r = m - np.polyval(np.polyfit(x, m, 2, w=np.sqrt(wt)), x)
+        wt = 1 / (1 + (r / 1.0) ** 2)
+    K = np.zeros((n, n))  # 跟左右鄰居稍微平均：比 1/6 八度窄的抓不準
+    for i in range(n):
+        for j, c in ((i - 1, 0.1), (i, 0.8), (i + 1, 0.1)):
+            K[i, j if 0 <= j < n else 2 * i - j] += c
+    rs = K @ r
+    # 每一格結果裡有多少是誤差：每次判斷的誤差一路累加（L）、扣掉趨勢（I−H）、再平滑（K）
+    V = np.vander(x, 3)
+    L = np.tril(np.ones((n, n - 1)), -1)
+    P = K @ (np.eye(n) - V @ np.linalg.pinv(V)) @ L
+    noise = sig2 / 2 * (P ** 2).sum(1)
+    corr = np.clip(rs * rs ** 2 / (rs ** 2 + noise), -6, 6)[1:-1]  # 結果比誤差大越多越可信；差不多大的幾乎不校正
+    fd = np.geomspace(1500, 20000, 240)
+    xf = x[1:-1]
+    target = np.interp(np.log2(fd / 1000), np.r_[xf[0] - 0.5, xf, xf[-1] + 0.5], np.r_[0, corr, 0])
+    model = lambda g: 20 * np.log10(np.abs(_H(np, [("PK", fc, gi, HF_Q) for fc, gi in zip(HF_FREQS, g)], fd, 96000)))
+    g, lam = corr.copy(), 0.15
+    for _ in range(6):  # 高斯-牛頓，加一點懲罰：不要相鄰濾波器一正一負互相抵消
+        base = model(g)
+        J = np.stack([(model(g + e) - base) / 0.5 for e in np.eye(len(g)) * 0.5], 1)
+        A = np.vstack([J, lam * np.eye(len(g))])
+        g = np.clip(g + np.linalg.lstsq(A, np.r_[target - base, -lam * g], rcond=None)[0], -6, 6)
+    filters = [("PK", fc, round(float(gi), 1), HF_Q) for fc, gi in zip(HF_FREQS, g) if abs(gi) >= 0.2]
+    return [round(float(c), 1) for c in corr], filters, round(float(np.sqrt(sig2)), 1)
+
+
+# 聲音偏好：Harman 的研究裡，同一個目標曲線最受歡迎，但每個人喜歡的低音、高音量不一樣（Olive, Acoustics Today 2022：
+# 約 15% 偏好多 4–6 dB 低音、也有一群偏好少一點）→ 用你自己的歌盲聽比較，兩個方向各 8 題，差距由大到小（自適應）
+PREF_STEPS = [3, 3, 2, 2, 1.5, 1.5, 1, 1]
+PREF_RANGE = {"bass": (-6.0, 8.0), "treble": (-6.0, 6.0)}
+
+
+def pref_filters(bass, treble):
+    """跟細調的「低頻」「高頻」同一種濾波器（低架 105 Hz、高架 10 kHz）"""
+    return [f for f in (("LSC", 105, round(bass, 1), 0.7), ("HSC", 10000, round(treble, 1), 0.7)) if f[2]]
+
+
+def apo_selftest(cfg_dir, dev):
+    """用 Equalizer APO 自己的檢查工具（Benchmark），照這個裝置現在的格式真的讀一次設定、處理 1 秒聲音
+    （只讀，不改任何東西）→ (問題清單, 即時運算佔一個 CPU 核心的 %)"""
+    exe = os.path.join(os.path.dirname(cfg_dir), "Benchmark.exe")
+    if not dev:
+        return ["還沒選輸出裝置"], None
+    if not os.path.exists(exe):
+        return ["找不到 Equalizer APO 的檢查工具（Benchmark.exe）"], None
+    fmt = parse_fmt(dev["fmt"])
+    cmd = [exe, "-r", str(fmt[1] if fmt else 48000), "-l", "1", "-v", "--nopause",
+           "--devicename", dev.get("iface") or "", "--guid", dev["guid"]]
+    try:
+        out = subprocess.run(cmd, cwd=os.path.dirname(exe), capture_output=True, timeout=120,
+                             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+    except (OSError, subprocess.SubprocessError) as e:
+        return [f"檢查工具執行失敗：{e}"], None
+    text = (out.stdout + out.stderr).decode("mbcs", "replace")
+    probs = []
+    for ln in text.splitlines():
+        ln = ln.strip()
+        if ("(ERROR)" in ln or "(WARNING)" in ln or
+                (not ln.startswith("(TRACE)") and re.search(r"error|fail|unable|cannot|could not|not found", ln, re.I))):
+            probs.append(re.sub(r"^\((ERROR|WARNING)\)\s*", "", ln))
+    if out_name(dev["guid"]).lower() not in text.lower():
+        probs.append("Equalizer APO 沒有讀到調音台的設定")
+    m = re.search(r"([\d.]+)% CPU load", text)
+    return probs, float(m.group(1)) if m else None
+
+
 def build_config(filters, width=0, crossfeed=0, balance=0.0, reverb_files=None, extra=0.0, headroom=None,
-                 xfeed=None, recon=None):
+                 xfeed=None, recon=None, sep=None):
     """產生設定檔內容。音量固定降 HEADROOM（＋extra），EQ 關閉時也一樣。
     width＝聲場加寬百分比、crossfeed＝交叉饋送等級、balance＝左右平衡（正＝偏右）、reverb_files＝{取樣率: 殘響檔}、
     xfeed＝{取樣率: 交叉饋送檔}、recon＝{取樣率: 重建濾波檔}"""
     k = width / 100
     lines = ["# written by headphone tuner", f"Preamp: {-((HEADROOM if headroom is None else headroom) + extra):.1f} dB"]
+    lines += sep or []  # 分離度外掛：在等化器前面（看到的是原本的左右關係）
     lines += [f"Filter: ON {t} Fc {fc:g} Hz Gain {g:.1f} dB Q {q:.2f}" for t, fc, g, q in filters]
     if crossfeed and xfeed:  # 頭部模型算的交叉饋送（每個取樣率一份）
         lines += xfeed_lines(xfeed)
@@ -1660,6 +2064,17 @@ class App:
         self._perm_asked = False
         self.eq_problem = None  # 每 2 秒在 refresh_device 更新
         self._ir_jobs, self._ir_ready, self._clean_job = set(), False, None  # 背景做殘響檔
+        self.sep_level = tk.IntVar(value=int(s.get("sep", 0)))  # 分離度：關／輕／中／強（所有風格都套用）
+        self._sep_name = None
+        self.hf_all = s.get("hf") or {}  # 高頻校正：{耳機名稱: 測驗結果}
+        self.hf_data, self.hf_on = {}, tk.BooleanVar(value=False)
+        self.load_hf()
+        pf = s.get("pref") or {}
+        self.pref_data = pf if "bass" in pf else {}  # 聲音偏好測驗的結果
+        self.pref_on = tk.BooleanVar(value=bool(self.pref_data and pf.get("on", True)))
+        self._test = None  # 個人化測驗中暫時用的設定
+        self._hf = self._pref = self._hf_win = None
+        self._selftest, self._st_busy, self.st_probs = None, False, []
         self.enabled = tk.BooleanVar(value=last.get("enabled", True))
         self.base = tk.StringVar(value=last.get("base") if last.get("base") in BASES else default_base())
         self.bands = [tk.DoubleVar(value=v) for v in (last.get("bands") or [0] * len(BANDS))]
@@ -1684,6 +2099,11 @@ class App:
         self.fit_screen()
         self.changed()
         self.tick()
+        self.dev_chip.bind("<Button-1>", lambda _e: self.run_selftest(show=True))
+        self.dev_chip.config(cursor="hand2")
+        self.root.after(8000, self.run_selftest)  # 開啟後自動檢查一次（Equalizer APO 真的讀一次設定）
+        if self.hp and len({src for src, _f in self.hp.get("sources", [])}) >= 2 and "consensus" not in self.hp:
+            self.start_consensus(self.hp["name"])  # 舊版選的耳機：補算多源共識
         start_hotkeys(root, {1: self.hotkey_toggle_eq, 2: lambda: self.hotkey_style(1),
                              3: lambda: self.hotkey_style(-1)}, self.hotkey_failed)
         # 版面排好後把視窗大小固定住：之後文字變長變短都不會讓視窗跳動
@@ -1833,7 +2253,13 @@ class App:
         self.toggle_row(c, "開啟 EQ", "關掉＝原音比較，音量不變", self.enabled, self.changed)
         self.toggle_row(c, "直通模式", "類似獨佔：完全不處理聲音", self.passthrough, self.toggle_passthrough)
         self.toggle_row(c, "音量優先", "比較大聲，換風格音量會變（藍牙建議）", self.loud, self.changed)
-        self.label(c, "耳機校正（AutoEQ 量測，目標 Harman 2018）", 8, SUB).pack(anchor="w", pady=(px(8), px(2)))
+        hrow = tk.Frame(c, bg=PANEL)
+        hrow.pack(fill="x", pady=(px(8), px(2)))
+        self.label(hrow, "耳機校正（AutoEQ 量測，目標 Harman 2018）", 8, SUB).pack(side="left")
+        self.hf_pill = Pill(hrow, self, "", self.hf_dialog, size=8)
+        self.hf_pill.config(pady=0)  # 跟標題同高，視窗不會變高
+        self.hf_pill.pack(side="right")
+        self.paint_hf()
         grid = tk.Frame(c, bg=PANEL)
         grid.pack(fill="x")
         self.base_grid = grid
@@ -1903,10 +2329,13 @@ class App:
 
         # 右：空間感與平衡
         c = self.card(right, "空間感與平衡")
+        self.sep_pill = Pill(c.winfo_children()[0], self, "", self.cycle_sep, size=9)
+        self.sep_pill.pack(side="left", padx=(px(10), 0))
+        self.paint_sep()
         g = tk.Frame(c, bg=PANEL)
         g.pack(fill="x")
         self.width_lbl = self.slider_row(g, 0, "聲場寬度", "左右拉開", self.width, 0, 40, 5, 180)
-        self.cf_lbl = self.slider_row(g, 1, "交叉饋送", "像聽喇叭、不累", self.crossfeed, 0, 3, 1, 180, num=False)
+        self.cf_lbl = self.slider_row(g, 1, "交叉饋送", "最右＝虛擬喇叭", self.crossfeed, 0, 4, 1, 180, num=False)
         self.bal_lbl = self.slider_row(g, 2, "左右平衡", "補償左右耳", self.balance, -3, 3, 0.5, 180, num=False)
         self.room_lbl = self.slider_row(g, 3, "殘響空間", "錄音室／音樂廳", self.room, 0, 3, 1, 180, num=False)
         self.room_lbl.config(width=10)
@@ -2050,6 +2479,8 @@ class App:
                     msg.config(text=f"下載失敗：{err or '沒有可用的資料'}", fg=ORANGE)
                 return
             self.set_hp({"name": name, "sources": sources})
+            if len({src for src, _p in state["models"][name]}) >= 2:
+                self.start_consensus(name, state["models"][name])  # 背景下載所有量測、算多源共識
             if win.winfo_exists():
                 win.destroy()
 
@@ -2068,6 +2499,7 @@ class App:
         self.hp = hp
         self._base_curves.clear()
         set_headphone(hp)
+        self.load_hf()
         update_headroom()
         self.build_base_pills()
         self.base.set(default_base())
@@ -2109,6 +2541,7 @@ class App:
         self.hp = p.get("headphone")
         self._base_curves.clear()
         set_headphone(self.hp)
+        self.load_hf()
         update_headroom()
         self.build_base_pills()
         last = p.get("last", {})
@@ -2419,6 +2852,8 @@ class App:
                     else:
                         self.set_device(d, auto=True)
         dev = find_device(self.dev_guid)
+        if self._selftest:
+            self.selftest_done()
         self.refresh_device(dev, hf)
         self.refresh_format(dev)
         self.refresh_playback(dev)
@@ -2433,7 +2868,10 @@ class App:
         if dev and dev["hooked"] and dev["active"]:
             self.eq_problem = config_problem(self.cfg_dir, dev)
             if not self.eq_problem:
-                self.dev_chip.config(text="● EQ 已接上", fg=GREEN, bg=GREEN_BG)
+                if self.st_probs:  # 自我檢查（Equalizer APO 真的讀一次設定）發現問題
+                    self.dev_chip.config(text="● 自我檢查發現問題（點這裡看）", fg=ORANGE, bg=ORANGE_BG)
+                else:
+                    self.dev_chip.config(text="● EQ 已接上", fg=GREEN, bg=GREEN_BG)
                 self.fix_btn.pack_forget()
                 return
             text, btn, cmd = f"● {self.eq_problem}", "一鍵修復", self.repair_config
@@ -2616,9 +3054,9 @@ class App:
         self.changed()
 
     def filters(self):
-        base = BASES[self.base.get()][1]
+        base = list(BASES[self.base.get()][1]) + self.hf_comp() + self.pref_comp()
         style = [(k, f, round(v.get(), 1), q) for (_n, k, f, q, _h), v in zip(BANDS, self.bands) if v.get()]
-        return list(base), style
+        return base, style
 
     def set_bands(self, vals, width=None, crossfeed=None, room=None):
         for var, v in zip(self.bands, vals):
@@ -2729,9 +3167,12 @@ class App:
         if not getattr(self, "_holding", False):
             self.record()
         base, style = self.filters()
-        through = self.passthrough.get()
-        on = self.enabled.get() and not through
-        room, files, note = int(self.room.get()), {}, ""
+        test = self._test  # 個人化測驗中：用測驗的設定，風格、殘響、聲場、分離度先拿掉
+        if test:
+            style = test["style"]
+        through = self.passthrough.get() and not test
+        on = (self.enabled.get() or bool(test)) and not through
+        room, files, note = 0 if test else int(self.room.get()), {}, ""
         if room:  # 偵測不到取樣率時也用已經做好的常見取樣率殘響檔（以前會整段拿掉，之後同取樣率回來也不會補回）
             try:
                 files = self.reverb_files(room)
@@ -2739,22 +3180,32 @@ class App:
                 note = f"（殘響做不出來：{e}）"
             if not files and not note:
                 note = "（殘響檔準備中）"
-        filters, width, cf = base + style, self.width.get(), int(self.crossfeed.get())
+        filters, width, cf = base + style, 0 if test else self.width.get(), 0 if test else int(self.crossfeed.get())
         xfeed, recon = {}, {}
         try:
-            xfeed = xfeed_files(self.cfg_dir, cf) if cf else {}
+            xfeed = (spk_files(self.cfg_dir) if cf == SPEAKER else {}) or (xfeed_files(self.cfg_dir, cf) if cf else {})
             recon = recon_files(self.cfg_dir)
         except Exception as e:  # 沒有 numpy 或寫不進去：交叉饋送用舊版、不做重建濾波
             note = note or f"（高解析處理做不出來：{e}）"
         self._hires = hires = bool(recon) and self.recon_on()
         # 用滿格母帶實際算這組設定的輸出峰值。固定預留：超過就整體多降。音量優先：只預留目前設定需要的。
         # 兩種都一樣：EQ 關掉時用同一個音量，A/B 比較才公平
-        need = true_peak(filters, width, cf, room if files else 0, hires) + SAFETY
+        sep, sname, sv = [], None, SEP_LEVELS[int(self.sep_level.get())][1]
+        if sv and on and not test:
+            try:
+                sname = sep_file(self.cfg_dir)
+                sep = sep_lines(self.cfg_dir, sname, sv) if sname else []
+            except OSError as e:
+                note = note or f"（分離度外掛複製失敗：{e}）"
+        self._sep_name = sname if sep else None
+        need = true_peak(filters, width, cf, room if files else 0, hires) + SAFETY + (SEP_MARGIN if sep else 0)
         if self.loud.get():
             hr, extra = max(0.0, math.ceil(need * 2) / 2), 0.0
         else:
             hr, extra = HEADROOM, math.ceil(max(0.0, need - HEADROOM) * 10) / 10
-        text = (build_config(filters, width, cf, self.balance.get(), files, extra, hr, xfeed, recon) if on
+        if test:
+            extra += test.get("extra", 0.0)  # 偏好測驗：兩個選項的響度對齊
+        text = (build_config(filters, width, cf, self.balance.get(), files, extra, hr, xfeed, recon, sep) if on
                 else build_config([], extra=extra, headroom=hr, recon=recon))
         if through:  # 不寫 Preamp、不寫任何濾波器 → 訊號原封不動
             text = "# written by headphone tuner\n# passthrough: no processing\n"
@@ -2771,6 +3222,8 @@ class App:
                 msg = (f"✓ 已套用　音量優先：只預留 {hr:g} dB（換風格音量會變，開關 EQ 音量一樣）" if self.loud.get() else
                        f"✓ 已套用　{why}：整體多降 {extra:.1f} dB 防破音（開關 EQ 音量仍一樣）" if extra else
                        "✓ 已套用　音量固定，切換設定、開關 EQ 音量都一樣　（關掉視窗 EQ 仍然有效）")
+                if test:
+                    msg = "個人化測驗中　暫時只留耳機校正"
                 self.status.config(text=msg + note, fg=ORANGE if note else GREEN)
         except PermissionError:
             self.status.config(text="✗ 沒有權限寫入 Equalizer APO 的設定資料夾", fg=ORANGE)
@@ -2781,7 +3234,7 @@ class App:
         # 舊的殘響檔等 Equalizer APO 換成新設定後再刪（其他裝置正在用的不刪）
         if self._clean_job:
             self.root.after_cancel(self._clean_job)
-        keep = set(files.values()) | self.reverb_in_use()
+        keep = set(files.values()) | set(xfeed.values()) | {self._sep_name} | self.reverb_in_use()
         self._clean_job = self.root.after(5000, lambda: cleanup_reverb(self.cfg_dir, keep))
 
     def reverb_files(self, room):
@@ -2812,8 +3265,8 @@ class App:
         for fn in os.listdir(self.cfg_dir):
             if fn.startswith("tuner_") and fn.endswith(".txt"):
                 try:
-                    used |= set(re.findall(r"Convolution: (\S+)", open(os.path.join(self.cfg_dir, fn), encoding="ascii",
-                                                                      errors="ignore").read()))
+                    text = open(os.path.join(self.cfg_dir, fn), encoding="ascii", errors="ignore").read()
+                    used |= set(re.findall(r"Convolution: (\S+)", text)) | set(re.findall(r"(sep_[0-9a-f]+\.dll)", text))
                 except OSError:
                     pass
         return used
@@ -2846,6 +3299,395 @@ class App:
             messagebox.showerror("測試音", f"播放失敗：{e}", parent=self.root)
 
     # ---------- 快捷鍵 ----------
+    # ---------- 分離度 ----------
+    def paint_sep(self):
+        lv = int(self.sep_level.get())
+        self.sep_pill.config(text=f"分離度：{SEP_LEVELS[lv][0]}")
+        self.sep_pill.set_selected(lv > 0)
+
+    def cycle_sep(self):
+        self.sep_level.set((int(self.sep_level.get()) + 1) % len(SEP_LEVELS))
+        self.paint_sep()
+        self.changed()
+
+    # ---------- 多源共識（背景下載所有量測、擬合）----------
+    def start_consensus(self, name, entries=None):
+        def work():
+            ent = entries
+            if ent is None:
+                models, _err = load_headphone_index()
+                ent = models.get(name)
+            res = consensus_fit(ent) if ent else None
+            self.root.after(0, self.got_consensus, name, res)
+        threading.Thread(target=work, daemon=True).start()
+
+    def got_consensus(self, name, res):
+        if not self.hp or self.hp.get("name") != name:
+            return
+        self.hp["consensus"] = res or []  # 空的＝試過了（不到兩份或下載失敗），不再重試
+        if res:
+            self.set_hp(self.hp)
+            self.toast(f"多源共識算好了（{res[0]} 份量測），已經改用")
+        else:
+            self.save_settings()
+
+    # ---------- 個人化：高頻校正、聲音偏好 ----------
+    def hf_key(self):
+        return (self.hp or {}).get("name", "")
+
+    def load_hf(self):
+        """高頻校正跟耳機有關：每支耳機各存一份"""
+        d = self.hf_all.get(self.hf_key()) or {}
+        self.hf_data = d if d.get("filters") is not None else {}
+        self.hf_on.set(bool(self.hf_data and d.get("on", True)))
+
+    def hf_comp(self):
+        if (self._test is not None and not self._test.get("hf")) or not self.hf_on.get():
+            return []
+        return [tuple(fl) for fl in self.hf_data.get("filters", [])]
+
+    def pref_comp(self):
+        if (self._test is not None and not self._test.get("pref")) or not self.pref_on.get() or not self.pref_data:
+            return []
+        return pref_filters(self.pref_data["bass"], self.pref_data["treble"])
+
+    def out_device(self):
+        """sounddevice 裡對應現在選的輸出裝置（WASAPI 共用模式，會經過 Equalizer APO）→ (sd, 編號, 取樣率)"""
+        import sounddevice as sd
+        api = next(i for i, a in enumerate(sd.query_hostapis()) if "WASAPI" in a["name"])
+        want = find_device(self.dev_guid)
+        dev = next(i for i, d in enumerate(sd.query_devices())
+                   if d["hostapi"] == api and d["max_output_channels"] >= 2 and want and want["iface"] in d["name"])
+        return sd, dev, int(sd.query_devices(dev)["default_samplerate"])
+
+    def center_on_root(self, win):
+        win.update_idletasks()
+        r = self.root
+        x = r.winfo_rootx() + (r.winfo_width() - win.winfo_reqwidth()) // 2
+        y = r.winfo_rooty() + (r.winfo_height() - win.winfo_reqheight()) // 3
+        win.geometry(f"+{max(0, x)}+{max(0, y)}")
+
+    def paint_hf(self):
+        n = (bool(self.hf_data) and self.hf_on.get()) + (bool(self.pref_data) and self.pref_on.get())
+        self.hf_pill.config(text=f"個人化：{n} 項" if n else "個人化")
+        self.hf_pill.set_selected(n > 0)
+
+    def hf_dialog(self):
+        if self._hf_win:
+            self._hf_win.lift()
+            return
+        win = self._hf_win = tk.Toplevel(self.root, bg=PANEL)
+        win.title("個人化")
+        win.transient(self.root)
+        win.resizable(False, False)
+        win.protocol("WM_DELETE_WINDOW", self.hf_end)
+        self._hf_body = tk.Frame(win, bg=PANEL)
+        self._hf_body.pack(fill="both", expand=True, padx=self.px(20), pady=self.px(16))
+        self.pers_overview()
+
+    def hf_clear(self):
+        for w in self._hf_body.winfo_children():
+            w.destroy()
+        for key in ("<Left>", "<Right>", "<Return>", "1", "2"):
+            self._hf_win.unbind(key)
+
+    def test_stop(self):
+        """停掉進行中的測驗：停止測試音、還原設定"""
+        for st in (self._hf, self._pref):
+            if st and st.get("job"):
+                self.root.after_cancel(st["job"])
+            if st and st.get("sd"):
+                try:
+                    st["sd"].stop()
+                except Exception:
+                    pass
+        self._hf = self._pref = None
+        if self._test is not None:
+            self._test = None
+            self.changed()
+
+    def hf_end(self):
+        self.test_stop()
+        if self._hf_win:
+            self._hf_win.destroy()
+            self._hf_win = None
+
+    def pers_page(self, title, text, buttons, wrap=640):
+        """一頁：標題、說明、右下角按鈕 [(文字, 指令, 主要)]"""
+        px, body = self.px, self._hf_body
+        self.hf_clear()
+        self.label(body, title, 12, bold=True).pack(anchor="w")
+        if text:
+            self.label(body, text, 9, SUB, justify="left", wraplength=px(wrap)).pack(anchor="w", pady=(px(4), px(10)))
+        row = tk.Frame(body, bg=PANEL)
+        row.pack(side="bottom", fill="x", pady=(px(12), 0))
+        for label, cmd, primary in reversed(buttons):
+            Pill(row, self, label, cmd, primary=primary).pack(side="right", padx=(px(6), 0))
+        if buttons:
+            self._hf_win.bind("<Return>", lambda _e: buttons[-1][1]())
+        return body
+
+    def pers_overview(self):
+        self.test_stop()
+        px = self.px
+        body = self.pers_page("個人化", "這兩項只跟你有關：你的耳朵、你的喜好。結果套用到所有風格，可以各自開關。",
+                              [("關閉", self.hf_end, False)])
+
+        def section(title, desc, result, var, start, start_label):
+            box = tk.Frame(body, bg=PANEL, highlightthickness=1, highlightbackground=LINE)
+            box.pack(fill="x", pady=(0, px(8)))
+            inner = tk.Frame(box, bg=PANEL)
+            inner.pack(fill="x", padx=px(12), pady=px(8))
+            right = tk.Frame(inner, bg=PANEL)
+            right.pack(side="right")
+            left = tk.Frame(inner, bg=PANEL)
+            left.pack(side="left", fill="x", expand=True)
+            self.label(left, title, 10, bold=True).pack(anchor="w")
+            self.label(left, desc, 8, SUB, justify="left", wraplength=px(470)).pack(anchor="w")
+            self.label(left, result, 9, justify="left", wraplength=px(470)).pack(anchor="w", pady=(px(3), 0))
+            if var is not None:
+                p = Pill(right, self, "", None, size=9)
+
+                def paint():
+                    p.config(text="開" if var.get() else "關")
+                    p.set_selected(var.get())
+
+                def flip():
+                    var.set(not var.get())
+                    paint()
+                    self.paint_hf()
+                    self.changed()
+                p.command = flip
+                paint()
+                p.pack(side="left", padx=(0, px(6)))
+            Pill(right, self, start_label, start, primary=True, size=9).pack(side="left")
+
+        hf = self.hf_data
+        peaks = [f"{fc / 1000:.1f} kHz {c:+.1f}" for fc, c in zip(HF_FREQS, hf.get("corr", [])) if abs(c) >= 1]
+        res = "還沒測" if not hf else f"{hf.get('date', '')}：" + ("、".join(peaks) + " dB" if peaks else "幾乎不用校正")
+        section(f"高頻校正（你的耳朵＋{self.hf_key() or '這支耳機'}）", "3–10 kHz 耳道共振的個人差異。用測試音，約 5 分鐘。",
+                res, self.hf_on if hf else None, self.hf_intro, "重新測驗" if hf else "開始測驗")
+        pf = self.pref_data
+        res = "還沒測" if not pf else f"{pf.get('date', '')}：低音 {pf['bass']:+.1f} dB、高音 {pf['treble']:+.1f} dB（跟標準比）"
+        section("聲音偏好（你的喜好）", "用你常聽的歌盲聽比較，找出你最喜歡的低音、高音量。要先播歌，約 8 分鐘。", res,
+                self.pref_on if pf else None, self.pref_intro, "重新測驗" if pf else "開始測驗")
+        self.center_on_root(self._hf_win)
+
+    # 高頻校正
+    def hf_intro(self):
+        n = len(HF_BANDS) - 1
+        self.pers_page("高頻校正（約 5 分鐘）",
+                       "每一題輪流播兩個音高很接近的聲音，把第二個調到跟第一個一樣大聲就好"
+                       "（拖滑桿或按左右鍵，好了按 Enter）。\n"
+                       f"共 {2 * n} 題、分兩輪：第一輪從低往高，第二輪從高往低。滑桿沒有刻度，憑耳朵就好。\n\n"
+                       "・請在安靜的房間測（開放式耳機外面的聲音會漏進來），先關掉風扇、冷氣這類一直響的聲音。\n"
+                       "・兩輪中間會請你拿下耳機、照平常的方式重戴（入耳式重新塞好）：高頻會隨戴的位置改變，"
+                       "只校正重戴後還在的部分。\n\n"
+                       "開始前：先暫停音樂，音量維持平常聽歌的大小。測驗時暫時只留耳機校正，結束或中途離開都會自動還原。",
+                       [("返回", self.pers_overview, False), ("開始", self.hf_start, True)])
+        self.err = self.label(self._hf_body, "", 9, ORANGE)
+        self.err.pack(anchor="w")
+
+    def hf_start(self):
+        try:
+            import numpy as np
+            sd, dev, sr = self.out_device()
+        except ImportError:
+            self.err.config(text="需要先安裝 numpy 和 sounddevice 這兩個套件。")
+            return
+        except Exception:
+            self.err.config(text="找不到現在選的輸出裝置，請確認耳機或 DAC 有接上。")
+            return
+        n = len(HF_BANDS) - 1
+        # 第一輪 (第一個聲音, 第二個聲音)＝(j, j+1) 由低往高；第二輪＝(j+1, j) 由高往低
+        order = [(j, j + 1) for j in range(n)] + [(j + 1, j) for j in reversed(range(n))]
+        self._hf = dict(np=np, sd=sd, dev=dev, sr=sr, order=order, k=0, up=[0.0] * n, down=[0.0] * n, job=None,
+                        bursts=[hf_burst(np, fc, sr) for fc in HF_BANDS], reseated=False)
+        self._test = dict(style=[], hf=False, pref=False)  # 只留耳機校正；等 Equalizer APO 讀進去再開始播
+        self.changed()
+        self.hf_page()
+
+    def hf_page(self):
+        st, px = self._hf, self.px
+        n = len(st["order"])
+        if st["k"] == n // 2 and not st["reseated"]:  # 兩輪中間：重戴耳機
+            st["sd"].stop()
+
+            def go():
+                st["reseated"] = True
+                self.hf_page()
+            self.pers_page("第一輪完成", "請把耳機拿下來，再照你平常的方式戴回去，然後按「繼續」。\n"
+                           "高頻會隨戴的位置改變，重戴一次才知道哪些是你耳朵本身的。",
+                           [("放棄", self.pers_overview, False), ("繼續", go, True)])
+            return
+        st["off"] = random.uniform(-5, 5)  # 每題起點隨機：滑桿位置沒有意義，只能靠耳朵
+        var = st["var"] = tk.DoubleVar(value=12.0)
+        body = self.pers_page(f"第 {st['k'] + 1}／{n} 題　（第 {1 + st['k'] * 2 // n} 輪）",
+                              "兩個聲音音高很接近，把第二個調到跟第一個一樣大聲。",
+                              [("放棄", self.pers_overview, False),
+                               ("下一題" if st["k"] + 1 < n else "完成", self.hf_next, True)])
+        row = tk.Frame(body, bg=PANEL)
+        row.pack(fill="x")
+        self.label(row, "小聲", 9, SUB).pack(side="left")
+        sl = Slider(row, self, var, 0, 24, 0.5, 420, self.hf_play)
+        sl.pack(side="left", padx=px(8))
+        self.label(row, "大聲", 9, SUB).pack(side="left")
+        win = self._hf_win
+        win.bind("<Left>", lambda _e: sl.set(var.get() - 0.5))
+        win.bind("<Right>", lambda _e: sl.set(var.get() + 0.5))
+        st["job"] = self.root.after(900 if st["k"] in (0, n // 2) else 0, lambda: self.hf_play(True))
+        win.focus_force()
+
+    def hf_gain(self):
+        return self._hf["var"].get() - 12 + self._hf["off"]
+
+    def hf_play(self, now=False):
+        st = self._hf
+        if not st:
+            return
+        if st["job"]:
+            self.root.after_cancel(st["job"])
+        if not now:  # 拖動時等停下來再重播
+            st["job"] = self.root.after(120, lambda: self.hf_play(True))
+            return
+        st["job"] = None
+        a, b = st["order"][st["k"]]
+        try:
+            clip = hf_clip(st["np"], st["bursts"][a], st["bursts"][b], self.hf_gain(), sr=st["sr"])
+            st["sd"].play(clip, st["sr"], device=st["dev"], loop=True)
+        except Exception as e:
+            self.pers_overview()
+            messagebox.showerror("高頻校正", f"播放失敗：{e}", parent=self._hf_win)
+
+    def hf_next(self):
+        st = self._hf
+        if not st:
+            return
+        if st["job"]:
+            self.root.after_cancel(st["job"])
+            st["job"] = None
+        a, b = st["order"][st["k"]]
+        (st["up"] if b > a else st["down"])[min(a, b)] = round(self.hf_gain(), 1)
+        st["k"] += 1
+        if st["k"] < len(st["order"]):
+            self.hf_page()
+            return
+        st["sd"].stop()
+        self._hf = None
+        corr, filters, err = hf_analyze(st["up"], st["down"])
+        self.hf_data = {"v": 2, "date": datetime.now().strftime("%Y-%m-%d"), "up": st["up"], "down": st["down"],
+                        "corr": corr, "filters": [list(fl) for fl in filters], "spread": err}
+        self.hf_on.set(True)
+        self._test = None
+        self.paint_hf()
+        self.changed()
+        peaks = [f"{fc / 1000:.1f} kHz {c:+.1f} dB" for fc, c in zip(HF_FREQS, corr) if abs(c) >= 1]
+        text = ("你的耳朵在這些地方跟一般人不一樣，已經自動補正（＋是補強、－是減弱）：\n" + "、".join(peaks) if peaks
+                else "你的耳朵跟一般人很接近，幾乎不用校正。")
+        text += f"\n\n這次每一題的判斷誤差約 {err:g} dB"
+        text += ("（很穩定）。" if err <= 1.5 else "，偏大：校正已經自動打折。可以改天在更安靜、精神好的時候再測一次。")
+        self.pers_page("高頻校正完成", text + "\n\n已經套用到所有風格（只套用在這支耳機）。", [("完成", self.pers_overview, True)])
+        self.center_on_root(self._hf_win)
+
+    # 聲音偏好
+    def pref_intro(self):
+        self.pers_page("聲音偏好（約 8 分鐘）",
+                       "先播一首你熟悉、常聽的歌（音質好一點的），音量照平常。\n\n"
+                       "每一題有 A、B 兩種聲音，可以來回切換很多次（按 1、2 也可以），選你比較喜歡的那個。\n"
+                       "兩個的音量已經對齊（大聲一點通常會被覺得比較好聽），名稱也藏起來。共 16 題，差別一題比一題小，"
+                       "聽不出差別就憑感覺選。\n\n"
+                       "測驗時暫時只留耳機校正（風格、殘響、分離度先拿掉），結束或中途離開都會自動還原。",
+                       [("返回", self.pers_overview, False), ("開始", self.pref_start, True)])
+
+    def pref_start(self):
+        seq = [(d, s) for s in PREF_STEPS for d in ("bass", "treble")]
+        self._pref = dict(seq=seq, k=0, est={"bass": 0.0, "treble": 0.0}, hist=[])
+        self.pref_page()
+
+    def pref_page(self):
+        st, px = self._pref, self.px
+        d, step = st["seq"][st["k"]]
+        lo, hi = PREF_RANGE[d]
+        vals = [max(lo, st["est"][d] - step), min(hi, st["est"][d] + step)]
+        random.shuffle(vals)
+        base = list(BASES[self.base.get()][1]) + self.hf_comp()
+
+        def flt(v):
+            e = dict(st["est"], **{d: v})
+            return pref_filters(e["bass"], e["treble"])
+        st["vals"], st["flts"] = vals, [flt(v) for v in vals]
+        loud = [loudness_db(base + fl) for fl in st["flts"]]
+        st["extra"] = [round(x - min(loud), 1) for x in loud]
+        n = len(st["seq"])
+        body = self.pers_page(f"第 {st['k'] + 1}／{n} 題", "來回切換 A、B，選你比較喜歡的那個。",
+                              [("放棄", self.pers_overview, False), ("選目前這個", self.pref_choose, True)])
+        row = tk.Frame(body, bg=PANEL)
+        row.pack(anchor="w")
+        st["pills"] = []
+        for i in range(2):
+            p = Pill(row, self, "AB"[i], lambda i=i: self.pref_pick(i), size=16)
+            p.pack(side="left", padx=(0, px(8)))
+            st["pills"].append(p)
+            self._hf_win.bind(str(i + 1), lambda _e, i=i: self.pref_pick(i))
+        self.pref_pick(0)
+        self.center_on_root(self._hf_win)
+
+    def pref_pick(self, i):
+        st = self._pref
+        st["cur"] = i
+        for j, p in enumerate(st["pills"]):
+            p.set_selected(j == i)
+        self._test = dict(style=st["flts"][i], hf=True, pref=False, extra=st["extra"][i])
+        self.changed()
+
+    def pref_choose(self):
+        st = self._pref
+        d, step = st["seq"][st["k"]]
+        v = st["vals"][st["cur"]]
+        lo, hi = PREF_RANGE[d]
+        st["est"][d] = min(hi, max(lo, st["est"][d] + (step / 2 if v > st["est"][d] else -step / 2)))
+        st["hist"].append([d, step, v])
+        st["k"] += 1
+        if st["k"] < len(st["seq"]):
+            self.pref_page()
+            return
+        b, t = round(st["est"]["bass"], 1), round(st["est"]["treble"], 1)
+        self.pref_data = {"bass": b, "treble": t, "date": datetime.now().strftime("%Y-%m-%d"), "hist": st["hist"]}
+        self.pref_on.set(True)
+        self._pref, self._test = None, None
+        self.paint_hf()
+        self.changed()
+        word = lambda x, name: (f"{name}比標準多 {x:g} dB" if x >= 1 else f"{name}比標準少 {-x:g} dB" if x <= -1
+                                else f"{name}跟標準差不多")
+        self.pers_page("聲音偏好完成",
+                       f"你喜歡的聲音：{word(b, '低音')}、{word(t, '高音')}。\n\n"
+                       "已經加到所有風格上（風格是在標準上調整，所以每個風格都會照你的喜好偏一點）。"
+                       "可以在「個人化」隨時開關比較；換了常聽的音樂類型也可以重測。",
+                       [("完成", self.pers_overview, True)])
+
+    # ---------- 自我檢查：Equalizer APO 真的讀一次設定 ----------
+    def run_selftest(self, show=False):
+        if self._st_busy:
+            return
+        self._st_busy = True
+        dev, cfg = find_device(self.dev_guid), self.cfg_dir
+
+        def work():
+            self._selftest = apo_selftest(cfg, dev) + (show,)
+        threading.Thread(target=work, daemon=True).start()
+
+    def selftest_done(self):
+        """tick 裡呼叫：背景檢查做完了 → 更新狀態，需要就跳出結果"""
+        res, self._selftest = self._selftest, None
+        self._st_busy = False
+        self.st_probs, cpu, show = res
+        if show or self.st_probs:
+            text = ("Equalizer APO 照這個裝置現在的格式真的讀了一次設定，沒有發現問題。" if not self.st_probs else
+                    "發現這些問題：\n\n・" + "\n・".join(self.st_probs[:8]))
+            if cpu is not None:
+                text += f"\n\n全部效果即時運算約佔一個 CPU 核心的 {cpu:.0f}%（越低越不會爆音）。"
+            (messagebox.showwarning if self.st_probs else messagebox.showinfo)("自我檢查", text, parent=self.root)
+
     def toast(self, text):
         """螢幕右下角跳一個小提示（在 Tidal 裡按快捷鍵也看得到）"""
         if self._toast:
@@ -2897,7 +3739,11 @@ class App:
     def save_settings(self):
         if self.dev_guid:
             self.profiles[self.dev_guid] = {"headphone": self.hp, "last": self.snapshot(), "loud": self.loud.get()}
-        data = {"presets": self.presets, "device": self.dev_guid, "follow": self.follow.get(), "profiles": self.profiles}
+        if self.hf_data and self.hf_key():
+            self.hf_all[self.hf_key()] = {**self.hf_data, "on": self.hf_on.get()}
+        data = {"presets": self.presets, "device": self.dev_guid, "follow": self.follow.get(), "profiles": self.profiles,
+                "sep": int(self.sep_level.get()), "hf": self.hf_all,
+                "pref": {**self.pref_data, "on": self.pref_on.get()} if self.pref_data else {}}
         try:
             with open(SETTINGS_FILE, "w", encoding="utf-8") as fh:
                 json.dump(data, fh, ensure_ascii=False, indent=1)
