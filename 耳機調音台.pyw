@@ -433,17 +433,29 @@ MASTER_FS = 96000  # 模擬檔的取樣率（跟 tools/殘響模擬.py 算的一
 _MASTERS = {}
 
 
+HEAD_USE = ["KU100"]  # 頭型（「交叉饋送」底下的「頭型 ▾」）：KU100 假人頭＝主要那份，其他是 SADIE II 真人另算的一組
+
+
+def head_file(name):
+    """選了真人頭型時，那個人算好的檔（殘響/頭部/<代號>/）優先，沒有的（例：音樂廳）用主要那份 → (路徑, 檔名標記)"""
+    if HEAD_USE[0] != "KU100":
+        p = os.path.join(REVERB_DIR, "頭部", HEAD_USE[0], name)
+        if os.path.exists(p):
+            return p, HEAD_USE[0].lower()
+    return os.path.join(REVERB_DIR, name), ""
+
+
 def room_master(key):
     """這個房間模擬好的殘響（96 kHz、4 聲道、只有殘響、每個聲源兩耳總能量＝1）→ (陣列, 版本) 或 None"""
-    path = os.path.join(REVERB_DIR, f"{key}.npy")
+    path, who = head_file(f"{key}.npy")
     try:
-        tag = f"{int(os.path.getmtime(path)) % 65536:04x}"  # 模擬檔更新過 → 檔名跟著換，Equalizer APO 才會讀新的
+        tag = f"{int(os.path.getmtime(path)) % 65536:04x}{who}"  # 模擬檔更新過、換頭型 → 檔名跟著換，Equalizer APO 才會讀新的
     except OSError:
         return None
     if _MASTERS.get(key, (None, None))[1] != tag:
         try:
             import numpy as np
-            _MASTERS[key] = (np.load(path).astype(float), tag)
+            _MASTERS[key] = (np.load(path).astype(float), tag)  # 每個房間只留現在頭型的那份
         except (ImportError, OSError, ValueError):
             return None
     return _MASTERS[key]
@@ -525,33 +537,34 @@ def minphase(mag):
 # 取代原本只把低頻左右混一點、沒有時間差的中/側濾波。輕／中／強 照原本的低頻左右分離度（9.6／6.0／4.5 dB），
 # 再補償成「左右一樣的聲音（人聲、貝斯）總響應平直」→ 音色不變，只有左右分很開的聲音被拉回前方
 XF_EAR, XF_SPK = 100, 30  # 耳朵在正前方左右 100°、喇叭在 ±30°
-_XF, _ITF = {}, []
-# v3：有真人頭部量測（SADIE II 資料庫的 Neumann KU100 假人頭，University of York，Apache 2.0；殘響\hrtf30.npy＝
-# 左前 30° 喇叭到同側耳、對側耳）就用量測的兩耳傳遞函數（有耳廓，比球形頭準），沒有才用剛性球模型
-HRTF30 = os.path.join(REVERB_DIR, "hrtf30.npy")
+_XF, _ITF = {}, {}
+# v3：有真人頭部量測（SADIE II 資料庫的 Neumann KU100 假人頭，University of York，Apache 2.0；殘響/hrtf30.npy＝
+# 左前 30° 喇叭到同側耳、對側耳）就用量測的兩耳傳遞函數（有耳廓，比球形頭準），沒有才用剛性球模型；
+# 選了真人頭型就用那個人的（殘響/頭部/<代號>/hrtf30.npy）
 
 
 def measured_itf():
     """量測的兩耳傳遞函數（對側／同側）→ (96 kHz 脈衝響應, 往前挪的取樣數) 或 None"""
-    if not _ITF:
+    path = head_file("hrtf30.npy")[0]
+    if path not in _ITF:
         try:
             import numpy as np
-            hi, hc = np.load(HRTF30).astype(float)
+            hi, hc = np.load(path).astype(float)
             n, pre, keep = 1 << 14, 64, 512
             Hi, Hc = np.fft.rfft(hi, n), np.fft.rfft(hc, n)
             itf = Hc * np.conj(Hi) / (np.abs(Hi) ** 2 + 1e-3 * (np.abs(Hi) ** 2).max())  # 同側有凹陷的地方不會爆掉
             ir = np.roll(np.fft.irfft(itf, n), pre)[:keep]
             ir[:16] *= np.sin(np.linspace(0, np.pi / 2, 16)) ** 2
             ir[-64:] *= np.cos(np.linspace(0, np.pi / 2, 64)) ** 2
-            _ITF.append((ir, pre))
+            _ITF[path] = (ir, pre)
         except (ImportError, OSError, ValueError):
-            _ITF.append(None)
-    return _ITF[0]
+            _ITF[path] = None
+    return _ITF[path]
 
 
 def xfeed_tf(level, f):
     """交叉饋送的頻率響應 → (同側, 對側)；f 是 rfft 的頻率格"""
-    key = (level, len(f), float(f[-1]))
+    key = (level, len(f), float(f[-1]), head_file("hrtf30.npy")[0])
     if key not in _XF:
         import numpy as np
         g = 10 ** (CROSSFEED[level][1] / 20)
@@ -575,7 +588,7 @@ def xfeed_files(cfg_dir, level):
     """每個取樣率一份交叉饋送檔（4 聲道：L、R 的同側，XL、XR 的對側）→ {取樣率: 檔名}"""
     import numpy as np
     out = {}
-    ver = "v3" if measured_itf() else "v2"
+    ver = "v3" + head_file("hrtf30.npy")[1] if measured_itf() else "v2"  # 換頭型 → 換檔名
     for rate in RATES:
         name = f"xfeed_{ver}_{level}_{rate}.wav"
         path = os.path.join(cfg_dir, name)
@@ -646,8 +659,9 @@ def spk_files(cfg_dir):
 
 
 # 分離度：Equalizer APO 直接載入的 VST 外掛（分離度引擎\sep_v1.dll，原始碼 sep.cpp，MIT）。每個頻率（約 21 ms 的
-# 短時傅立葉）把左右分成「主要的聲音」和環境音，靠中間的樂器往兩邊拉開、加上對應的兩耳時間差；人聲、正中間和最左右的不動，
-# 環境音、殘響不動。延遲約 23 ms；強度 0 跟原音逐位元一樣
+# 短時傅立葉）把左右分成「主要的聲音」和環境音，靠中間的樂器往兩邊拉開、加上對應的兩耳時間差（只在 2 kHz 以下）；
+# 人聲、正中間和最左右的不動，環境音、殘響不動。第 2 版：位置估計在頻率方向平均約半個聽覺頻帶、時間 50 ms
+# → 推的量不再一格一格跳（第 1 版的顆粒感）。延遲約 23 ms；強度 0 跟原音逐位元一樣
 SEP_DLL = os.path.join(APP_DIR, "分離度引擎", "sep_v1.dll")
 SEP_LEVELS = [("關", 0.0), ("輕", 0.35), ("中", 0.6), ("強", 0.9)]
 SEP_MARGIN = 1.0  # 拉開時峰值最多多約 0.2 dB，多留一點
@@ -812,7 +826,8 @@ def cleanup_reverb(cfg_dir, keep):
         spk = room_master("studio_spk")
         old_spk = fn.startswith("spk_") and fn not in keep and not (spk and fn.startswith(f"spk_v1{spk[1]}_"))
         old_sep = fn.startswith("sep_") and fn.endswith(".dll") and fn not in keep  # 舊版外掛（還在用的刪不掉，下次再刪）
-        if (fn.startswith("reverb_") and fn not in keep) or old_spk or old_sep:
+        old_xf = fn.startswith("xfeed_v3") and fn not in keep  # 換頭型前的交叉饋送檔（要用時會再做）
+        if (fn.startswith("reverb_") and fn not in keep) or old_spk or old_sep or old_xf:
             try:
                 os.remove(os.path.join(cfg_dir, fn))
             except OSError:
@@ -1760,6 +1775,76 @@ def pref_filters(bass, treble):
     return [f for f in (("LSC", 105, round(bass, 1), 0.7), ("HSC", 10000, round(treble, 1), 0.7)) if f[2]]
 
 
+# 頭型：KU100 假人頭＋SADIE II 資料庫的 18 位真人（University of York，Apache 2.0；左右對稱化），
+# 每個人用 tools/殘響模擬.py 另外算好錄音室、虛擬喇叭、交叉饋送（殘響/頭部/<代號>/）；音樂廳用假人頭那份
+HEADS_DIR = os.path.join(REVERB_DIR, "頭部")
+
+
+def current_head():
+    return HEAD_USE[0]
+
+
+def head_sets():
+    """可以切換的頭型：KU100＋有算好一組的（殘響/頭部/<代號>/studio_spk.npy）"""
+    try:
+        ids = [d for d in os.listdir(HEADS_DIR) if os.path.exists(os.path.join(HEADS_DIR, d, "studio_spk.npy"))]
+    except OSError:
+        ids = []
+    return ["KU100"] + sorted(ids, key=lambda h: int(h[1:]) if h[1:].isdigit() else 0)
+
+
+def head_name(hid):
+    return "KU100 假人頭" if hid == "KU100" else f"真人 {hid}"
+
+
+def head_groups_saved():
+    """依前方的頻率響應＋兩耳時間差分好的組（殘響/頭部/分組.json，每組第一個是代表）；沒有就每個頭自己一組"""
+    ids = head_sets()
+    try:
+        with open(os.path.join(HEADS_DIR, "分組.json"), encoding="utf-8") as fh:
+            groups = [[h for h in g if h in ids] for g in json.load(fh)["groups"]]
+        return [g for g in groups if g] + [[h] for h in ids if not any(h in g for g in groups)]
+    except (OSError, ValueError, KeyError):
+        return [[h] for h in ids]
+
+
+RING_AZ = [30, 0, -30, 0]  # 頭型測驗：左前 30° → 正前 → 右前 30° → 正前（像前面擺了三個喇叭；左＝+）
+RING_ON, RING_STEP, RING_PAUSE = 0.3, 0.45, 0.5  # 每個位置響 0.3 秒、0.45 秒換下一個；一輪停 0.5 秒再重來
+_RING = {}
+
+
+def head_ring(hid):
+    """這個頭在前方三個方向的兩耳脈衝響應（殘響/頭部/前方.npz：左前 30°、正前、右前 30°，96 kHz）→ (4, 2, 取樣)"""
+    if hid not in _RING:
+        import numpy as np
+        with np.load(os.path.join(HEADS_DIR, "前方.npz")) as d:
+            H = d[hid].astype(float)
+        _RING[hid] = H[[{30: 0, 0: 1, -30: 2}[a] for a in RING_AZ]]
+    return _RING[hid]
+
+
+def ring_clip(np, hid, sr):
+    """粉紅噪音在前方左右來回（每個頭都用同一段噪音，只差在頭部量測），音量對齊 → (取樣, 2) float32"""
+    fs = 96000
+    n_on, step = int(RING_ON * fs), int(RING_STEP * fs)
+    total = step * len(RING_AZ) + int(RING_PAUSE * fs)
+    spec = np.fft.rfft(np.random.default_rng(7).standard_normal(n_on))
+    k = np.arange(len(spec), dtype=float)
+    k[0] = 1
+    noise = np.fft.irfft(spec / np.sqrt(k), n_on)  # 粉紅噪音：每個八度能量一樣
+    noise *= np.minimum(1, np.minimum(np.arange(n_on), n_on - 1 - np.arange(n_on)) / (fs * 0.01))
+    H = head_ring(hid)
+    m = 1 << (n_on + H.shape[2]).bit_length()
+    out = np.zeros((total + m, 2))
+    N = np.fft.rfft(noise, m)
+    for i in range(len(RING_AZ)):
+        y = np.fft.irfft(N[None] * np.fft.rfft(H[i], m, axis=1), m, axis=1)
+        out[i * step:i * step + m] += y.T
+    out = out[:total]
+    out *= 0.05 / np.sqrt((out ** 2).mean())  # 約 -26 dBFS
+    return (_resample(out, sr) if sr != fs else out).astype("float32")
+
+
 def apo_selftest(cfg_dir, dev):
     """用 Equalizer APO 自己的檢查工具（Benchmark），照這個裝置現在的格式真的讀一次設定、處理 1 秒聲音
     （只讀，不改任何東西）→ (問題清單, 即時運算佔一個 CPU 核心的 %)"""
@@ -2073,7 +2158,9 @@ class App:
         self.pref_data = pf if "bass" in pf else {}  # 聲音偏好測驗的結果
         self.pref_on = tk.BooleanVar(value=bool(self.pref_data and pf.get("on", True)))
         self._test = None  # 個人化測驗中暫時用的設定
-        self._hf = self._pref = self._hf_win = None
+        self._hf = self._pref = self._hf_win = self._head = None
+        self._head_pop, self._head_pop_t = None, 0.0
+        HEAD_USE[0] = s.get("head") if s.get("head") in head_sets() else "KU100"
         self._selftest, self._st_busy, self.st_probs = None, False, []
         self.enabled = tk.BooleanVar(value=last.get("enabled", True))
         self.base = tk.StringVar(value=last.get("base") if last.get("base") in BASES else default_base())
@@ -2336,6 +2423,10 @@ class App:
         g.pack(fill="x")
         self.width_lbl = self.slider_row(g, 0, "聲場寬度", "左右拉開", self.width, 0, 40, 5, 180)
         self.cf_lbl = self.slider_row(g, 1, "交叉饋送", "最右＝虛擬喇叭", self.crossfeed, 0, 4, 1, 180, num=False)
+        self.head_lbl = g.grid_slaves(row=1, column=0)[0].winfo_children()[1]  # 小字加上「頭型」，點一下挑
+        self.head_lbl.config(cursor="hand2")
+        self.head_lbl.bind("<Button-1>", lambda _e: self.head_menu())
+        self.paint_head()
         self.bal_lbl = self.slider_row(g, 2, "左右平衡", "補償左右耳", self.balance, -3, 3, 0.5, 180, num=False)
         self.room_lbl = self.slider_row(g, 3, "殘響空間", "錄音室／音樂廳", self.room, 0, 3, 1, 180, num=False)
         self.room_lbl.config(width=10)
@@ -3368,7 +3459,8 @@ class App:
         win.geometry(f"+{max(0, x)}+{max(0, y)}")
 
     def paint_hf(self):
-        n = (bool(self.hf_data) and self.hf_on.get()) + (bool(self.pref_data) and self.pref_on.get())
+        n = ((bool(self.hf_data) and self.hf_on.get()) + (bool(self.pref_data) and self.pref_on.get())
+             + (current_head() != "KU100"))
         self.hf_pill.config(text=f"個人化：{n} 項" if n else "個人化")
         self.hf_pill.set_selected(n > 0)
 
@@ -3393,15 +3485,16 @@ class App:
 
     def test_stop(self):
         """停掉進行中的測驗：停止測試音、還原設定"""
-        for st in (self._hf, self._pref):
-            if st and st.get("job"):
-                self.root.after_cancel(st["job"])
+        for st in (self._hf, self._pref, self._head):
+            for key in ("job", "anim"):
+                if st and st.get(key):
+                    self.root.after_cancel(st[key])
             if st and st.get("sd"):
                 try:
                     st["sd"].stop()
                 except Exception:
                     pass
-        self._hf = self._pref = None
+        self._hf = self._pref = self._head = None
         if self._test is not None:
             self._test = None
             self.changed()
@@ -3430,7 +3523,7 @@ class App:
     def pers_overview(self):
         self.test_stop()
         px = self.px
-        body = self.pers_page("個人化", "這兩項只跟你有關：你的耳朵、你的喜好。結果套用到所有風格，可以各自開關。",
+        body = self.pers_page("個人化", "這三項只跟你有關：你的耳朵、你的喜好、你的頭型。結果套用到所有風格，可以各自開關。",
                               [("關閉", self.hf_end, False)])
 
         def section(title, desc, result, var, start, start_label):
@@ -3471,7 +3564,246 @@ class App:
         res = "還沒測" if not pf else f"{pf.get('date', '')}：低音 {pf['bass']:+.1f} dB、高音 {pf['treble']:+.1f} dB（跟標準比）"
         section("聲音偏好（你的喜好）", "用你常聽的歌盲聽比較，找出你最喜歡的低音、高音量。要先播歌，約 8 分鐘。", res,
                 self.pref_on if pf else None, self.pref_intro, "重新測驗" if pf else "開始測驗")
+        section("頭型（你的頭）", "虛擬喇叭、錄音室殘響、交叉饋送用的頭。從假人頭和 18 位真人裡，只聽前方、一次比兩個，"
+                "挑聲音最像在前面的一位。不用播歌，約 5 分鐘。也可以直接點「交叉饋送」底下的「頭型 ▾」換。",
+                f"目前：{head_name(current_head())}", None, self.head_intro, "挑選")
         self.center_on_root(self._hf_win)
+
+    # 頭型：「交叉饋送」底下的小字點一下跳出清單直接挑
+    def paint_head(self):
+        hid = current_head()
+        self.head_lbl.config(text=f"最右＝虛擬喇叭　頭型：{'假人頭' if hid == 'KU100' else hid} ▾",
+                             fg=SUB if hid == "KU100" else ACCENT)
+
+    def set_head(self, hid):
+        HEAD_USE[0] = hid
+        self.paint_head()
+        self.paint_hf()
+        self.changed()
+
+    def head_menu(self):
+        if self._head_pop or time.time() - self._head_pop_t < 0.3:  # 再點一次＝收起來
+            self.head_menu_close()
+            return
+        px, cur = self.px, current_head()
+        pop = self._head_pop = tk.Toplevel(self.root, bg=LINE)
+        pop.overrideredirect(True)
+        pop.attributes("-topmost", True)
+        body = tk.Frame(pop, bg=PANEL)
+        body.pack(padx=1, pady=1)
+        inner = tk.Frame(body, bg=PANEL)
+        inner.pack(padx=px(14), pady=px(10))
+
+        def pick(hid):
+            self.head_menu_close()
+            if hid != cur:
+                self.set_head(hid)
+                self.toast(f"頭型：{head_name(hid)}")
+
+        self.label(inner, "頭型（點一下馬上換）", 9, SUB).pack(anchor="w")
+        grid = tk.Frame(inner, bg=PANEL)
+        grid.pack(anchor="w", pady=(px(4), 0))
+        info = self.label(inner, "", 8, SUB)
+
+        def show(hid):  # 滑過哪個就顯示它的說明；平常顯示使用中的
+            txt = ("所有房間都用這個頭" if hid == "KU100"
+                   else "虛擬喇叭、錄音室、交叉饋送用這個頭；音樂廳用假人頭的")
+            info.config(text=f"{head_name(hid)}{'（使用中）' if hid == cur else ''}　{txt}")
+
+        for i, hid in enumerate(head_sets()):
+            p = Pill(grid, self, "假人頭" if hid == "KU100" else hid, lambda h=hid: pick(h), size=10)
+            p.set_selected(hid == cur)
+            p.grid(row=i // 7, column=i % 7, padx=(0, px(4)), pady=(0, px(4)), sticky="we")
+            p.bind("<Enter>", lambda _e, h=hid: show(h), add="+")
+            p.bind("<Leave>", lambda _e: show(cur), add="+")
+        info.pack(anchor="w")
+        show(cur)
+        row = tk.Frame(inner, bg=PANEL)
+        row.pack(fill="x", pady=(px(8), 0))
+        Pill(row, self, "不知道選哪個？到「個人化」用測驗挑", lambda: (self.head_menu_close(), self.hf_dialog()),
+             size=9).pack(side="right")
+        pop.update_idletasks()
+        lb = self.head_lbl
+        x = min(lb.winfo_rootx(), pop.winfo_screenwidth() - pop.winfo_width() - px(8))
+        y = lb.winfo_rooty() + lb.winfo_height() + px(4)
+        if y + pop.winfo_height() > pop.winfo_screenheight() - px(48):
+            y = max(px(8), lb.winfo_rooty() - pop.winfo_height() - px(4))
+        pop.geometry(f"+{x}+{y}")
+        pop.bind("<Escape>", lambda _e: self.head_menu_close())
+        pop.bind("<FocusOut>", lambda e: e.widget is pop and self.head_menu_close())
+        pop.focus_force()
+
+    def head_menu_close(self):
+        if self._head_pop:
+            self._head_pop.destroy()
+            self._head_pop, self._head_pop_t = None, time.time()
+
+    # 頭型測驗：只聽前方、一次比兩個（配對比較：同一次配戴下比，耳機戴歪兩邊一樣歪，結果還是準）。
+    # 先比各組代表（依前方的頻率響應＋兩耳時間差分好的組），再在贏的那組裡細比，最後重新戴耳機確認一次
+    def head_intro(self):
+        groups = head_groups_saved()
+        self.pers_page("挑頭型（約 5 分鐘）",
+                       "每題比兩個（A、B），按 1、2 或點 A、B 切換，想聽多久都可以。\n"
+                       "聲音會在你前面「左前 → 正前 → 右前 → 正前」來回，像前面擺了三個喇叭；畫面上的點標出它應該在的位置。\n\n"
+                       "只問一件事：哪一個比較像在你前面、跟眼睛差不多高、在頭外面？（不在頭頂、不在頭裡面）\n"
+                       "兩個都不完美很正常，選比較接近的就好；真的分不出來就隨便選一個。\n\n"
+                       "開始前先把耳機戴正：兩邊往下壓貼好、左右對稱。最後一題會請你重新戴一次再確認。\n\n"
+                       f"不用播音樂：請先暫停音樂，音量照平常。{len(head_sets())} 個頭（KU100 假人頭＋SADIE II 的真人）"
+                       f"分成 {len(groups)} 組，先比各組代表，再在贏的那組裡細比，大約 {self.head_total(groups)} 題。"
+                       "測驗時暫時只留耳機校正，結束或中途離開都會自動還原。\n\n"
+                       "老實說：頭型的差別不大（前方平均只差 2～3 dB，比重戴一次耳機的變化還小），"
+                       "影響的是虛擬喇叭和殘響的音色、聲音的高度。選不出來就用假人頭。",
+                       [("返回", self.pers_overview, False), ("開始", self.head_start, True)])
+        self.err = self.label(self._hf_body, "", 9, ORANGE)
+        self.err.pack(anchor="w")
+
+    @staticmethod
+    def head_total(groups):
+        return len(groups) - 1 + round(sum(len(g) - 1 for g in groups) / len(groups)) + 1
+
+    def head_start(self):
+        try:
+            import numpy as np
+            sd, dev, sr = self.out_device()
+        except ImportError:
+            self.err.config(text="需要先安裝 numpy 和 sounddevice 這兩個套件。")
+            return
+        except Exception:
+            self.err.config(text="找不到現在選的輸出裝置，請確認耳機或 DAC 有接上。")
+            return
+        groups = head_groups_saved()
+        reps = [g[0] for g in groups]
+        random.shuffle(reps)
+        self._head = dict(np=np, sd=sd, dev=dev, sr=sr, groups=groups, stage=1, champ=reps[0], queue=reps[1:], last=None,
+                          n=0, total=self.head_total(groups), clips={}, job=None, anim=None, t0=time.time())
+        self._test = dict(style=[], hf=True, pref=True)  # 只留耳機校正：頭部量測是唯一的空間處理
+        self.changed()
+        self.head_advance()
+
+    def head_advance(self):
+        """下一題：目前贏的（冠軍）對下一個挑戰者；這一關比完就換下一關"""
+        st = self._head
+        if not st["queue"] and st["stage"] == 1:  # 代表比完 → 冠軍那一組的其他人
+            grp = next(g for g in st["groups"] if st["champ"] in g)
+            st["queue"] = [h for h in grp if h != st["champ"]]
+            random.shuffle(st["queue"])
+            st["stage"] = 2
+        if st["queue"]:
+            st["pair"] = random.sample([st["champ"], st["queue"].pop(0)], 2)
+            self.head_page()
+            return
+        if st["stage"] == 2 and st["last"]:  # 最後確認：重新戴好耳機，冠軍跟最後一個對手再比一次
+            st["stage"] = 3
+            st["sd"].stop()
+            self.pers_page("最後確認", "把耳機拿下來，重新戴好（兩邊往下壓貼合、左右對稱），再比最後一題。\n"
+                           "換一次配戴還選同一個，就表示它真的比較適合你，不是剛好戴歪。",
+                           [("放棄", self.pers_overview, False), ("戴好了", self.head_confirm, True)])
+            return
+        self.head_done(st["champ"])
+
+    def head_confirm(self):
+        st = self._head
+        st["pair"] = random.sample([st["champ"], st["last"]], 2)
+        self.head_page()
+
+    def head_page(self):
+        st, px = self._head, self.px
+        stage = {1: "比較各組代表", 2: "在贏的那一組裡細比", 3: "重新戴好後確認"}[st["stage"]]
+        body = self.pers_page(f"第 {st['n'] + 1} 題（大約 {max(st['total'], st['n'] + 1)} 題）　{stage}",
+                              "A、B 哪一個比較像在你前面、跟眼睛差不多高、在頭外面？（不在頭頂、不在頭裡面）"
+                              "按 1、2 切換，聽多久都可以。",
+                              [("放棄", self.pers_overview, False), ("選目前這個", self.head_choose, True)])
+        row = tk.Frame(body, bg=PANEL)
+        row.pack(fill="x")
+        size = px(230)
+        cv = st["cv"] = tk.Canvas(row, width=size, height=size, bg=PANEL, highlightthickness=0)
+        cv.pack(side="left")
+        c, R, r = size / 2, size * 0.38, size * 0.12
+        cv.create_arc(c - R, c - R, c + R, c + R, start=50, extent=80, style="arc", outline=LINE, dash=(3, 4))  # 前方
+        cv.create_oval(c - r, c - r, c + r, c + r, outline=SUB, width=2)  # 頭（從上往下看）
+        cv.create_polygon(c - r * 0.3, c - r * 0.95, c, c - r * 1.35, c + r * 0.3, c - r * 0.95, fill=SUB)  # 鼻子＝前
+        for s in (-1, 1):  # 耳朵
+            cv.create_oval(c + s * r * 1.0 - r * 0.2, c - r * 0.3, c + s * r * 1.0 + r * 0.2, c + r * 0.3, outline=SUB)
+        for txt, x, y in (("前（跟眼睛一樣高）", c, c - R - px(14)), ("左", c - R - px(14), c), ("右", c + R + px(14), c)):
+            cv.create_text(x, y, text=txt, fill=SUB, font=(FONT, 9))
+        st["dot"] = cv.create_oval(0, 0, 0, 0, fill=ACCENT, outline="")
+        pills = tk.Frame(row, bg=PANEL)
+        pills.pack(side="left", padx=px(16))
+        st["pills"] = []
+        for i in range(2):
+            p = Pill(pills, self, "AB"[i], lambda i=i: self.head_pick(i), size=16)
+            p.pack(side="top", pady=px(3), anchor="w")
+            st["pills"].append(p)
+            self._hf_win.bind(str(i + 1), lambda _e, i=i: self.head_pick(i))
+        self.head_pick(0)
+        if not st["anim"]:
+            self.head_anim()
+        self.center_on_root(self._hf_win)
+
+    def head_pick(self, i):
+        st = self._head
+        st["cur"] = i
+        for j, p in enumerate(st["pills"]):
+            p.set_selected(j == i)
+        hid = st["pair"][i]
+        if hid not in st["clips"]:
+            st["clips"][hid] = ring_clip(st["np"], hid, st["sr"])
+        clip = st["clips"][hid]
+        st["period"] = len(clip) / st["sr"]
+        try:
+            st["sd"].play(clip, st["sr"], device=st["dev"], loop=True)
+        except Exception as e:
+            self.pers_overview()
+            messagebox.showerror("頭型", f"播放失敗：{e}", parent=self._hf_win)
+            return
+        st["t0"] = time.time()  # 從左前重新開始，畫面的點跟著重來
+
+    def head_anim(self):
+        """畫面上的點：現在這一聲應該在的位置（沒聲音時變淡）"""
+        st = self._head
+        if not st:
+            return
+        st["anim"] = self.root.after(40, self.head_anim)
+        cv = st.get("cv")
+        if not cv or not cv.winfo_exists() or "period" not in st:
+            return
+        t = (time.time() - st["t0"]) % st["period"]
+        i = min(int(t // RING_STEP), len(RING_AZ) - 1)
+        on = t < RING_STEP * len(RING_AZ) and t - i * RING_STEP < RING_ON
+        size = int(cv["width"])
+        c, R, d = size / 2, size * 0.38, self.px(9)
+        az = math.radians(RING_AZ[i] if on else 0)
+        x, y = c - R * math.sin(az), c - R * math.cos(az)
+        cv.coords(st["dot"], x - d, y - d, x + d, y + d)
+        cv.itemconfig(st["dot"], fill=ACCENT if on else LINE)
+
+    def head_choose(self):
+        st = self._head
+        win, lose = st["pair"][st["cur"]], st["pair"][1 - st["cur"]]
+        st["n"] += 1
+        if st["stage"] == 3:
+            self.head_done(win, win != st["champ"])
+            return
+        st["champ"], st["last"] = win, lose
+        self.head_advance()
+
+    def head_done(self, hid, changed=False):
+        self.test_stop()
+        note = "（重新戴好後選了另一個：這兩個很接近，用哪個都可以）" if changed else ""
+        if hid == current_head():
+            self.pers_page("挑選完成", f"你選的是：{head_name(hid)}{note}，跟現在用的一樣，不用改。",
+                           [("完成", self.pers_overview, True)])
+            return
+        self.pers_page("挑選完成",
+                       f"你選的是：{head_name(hid)}{note}（現在用的是 {head_name(current_head())}）。\n\n"
+                       "改用的話，虛擬喇叭、錄音室殘響、交叉饋送馬上換成這個頭（音樂廳用假人頭的）。"
+                       "之後可以點「交叉饋送」底下的「頭型 ▾」隨時換回來比較。",
+                       [("先不要", self.pers_overview, False), ("改用", lambda: self.head_use(hid), True)])
+
+    def head_use(self, hid):
+        self.set_head(hid)
+        self.toast(f"頭型：{head_name(hid)}")
+        self.pers_overview()
 
     # 高頻校正
     def hf_intro(self):
@@ -3742,7 +4074,7 @@ class App:
         if self.hf_data and self.hf_key():
             self.hf_all[self.hf_key()] = {**self.hf_data, "on": self.hf_on.get()}
         data = {"presets": self.presets, "device": self.dev_guid, "follow": self.follow.get(), "profiles": self.profiles,
-                "sep": int(self.sep_level.get()), "hf": self.hf_all,
+                "sep": int(self.sep_level.get()), "hf": self.hf_all, "head": current_head(),
                 "pref": {**self.pref_data, "on": self.pref_on.get()} if self.pref_data else {}}
         try:
             with open(SETTINGS_FILE, "w", encoding="utf-8") as fh:

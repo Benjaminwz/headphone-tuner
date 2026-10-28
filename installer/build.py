@@ -155,7 +155,10 @@ def build_zip(version):
     path = os.path.join(DIST, f"headphone-tuner-{version}.zip")
     os.makedirs(DIST, exist_ok=True)
     with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as z:
-        for name in ZIP_FILES:
+        heads = [os.path.relpath(os.path.join(d, fn), ROOT).replace(os.sep, "/")  # 頭型：每個真人算好的一組＋測驗用的前方量測
+                 for d, _s, fns in os.walk(os.path.join(ROOT, "殘響", "頭部")) for fn in fns
+                 if fn.endswith((".npy", ".npz")) or fn == "分組.json"]
+        for name in list(ZIP_FILES) + sorted(heads):
             z.write(os.path.join(ROOT, name), "耳機調音台/" + name)
     return path
 

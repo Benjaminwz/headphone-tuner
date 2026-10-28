@@ -2,12 +2,14 @@
 //
 // 做法（頻域的主成分／環境音分解：Avendano & Jot 2004, Merimaa 等 2007, Faller 2006）
 // 1. 短時傅立葉轉換：約 21 ms 的 Hann 窗、重疊 75%（取樣率越高窗越長，時間長度固定）
-// 2. 每個頻率格算左右的共變異（約 30 ms 平滑）→ 主成分＝這個頻率最主要的聲音（某個樂器）和它在左右的位置，
-//    剩下的＝環境音、殘響（左右不相關的部分），原封不動
+// 2. 每個頻率格算左右的共變異（約 50 ms 平滑，頻率方向再平均約半個聽覺頻帶 ERB）→ 主成分＝這附近最主要的聲音
+//    （某個樂器）和它在左右的位置，剩下的＝環境音、殘響（左右不相關的部分），原封不動
+//    第 1 版只看單一頻率格、30 ms：估計值一格一格跳 → 推的量跟著跳，聽起來有顆粒感（頻域處理的「音樂雜訊」）
 // 3. 把主成分往外推：靠中間的拉開最多、已經在最左右的不動、正中間（人聲）不動
 //    「方向性」低（很多聲音混在一起、或是擴散的殘響）的頻率格推得少 → 不會亂飄
-// 4. 再加上對應位置的兩耳時間差（最多 0.2 ms）→ 音量差＋時間差一致，聲像更集中、更容易分開（雙耳去遮蔽）
-// 5. 150 Hz 以下不處理（低音不分方向）；強度 0 時輸出＝輸入（只有固定延遲）
+// 4. 再加上對應位置的兩耳時間差（最多 0.2 ms），只在 1 kHz 以下（到 2 kHz 漸漸淡掉）：耳朵只在這裡用得到時間差
+//    （Rayleigh 雙重理論）；第 1 版高頻也加，相位跟著推的量晃動 → 粗糙
+// 5. 150 Hz 以下、24 kHz 以上不處理（低音不分方向、超音波沒有樂器）；強度 0 時輸出＝輸入（只有固定延遲）
 //
 // 參數：Strength（0–1）。Equalizer APO 設定：VSTPlugin: Library "...\sep_v1.dll" ChunkData "<base64 的 strength=0.60>"
 #include <algorithm>
@@ -59,8 +61,11 @@ const int32_t kFlagsCanReplacing = 1 << 4, kFlagsProgramChunks = 1 << 5;
 
 const double kPi = 3.14159265358979323846;
 const double kFrameSec = 1024.0 / 48000.0;   // 窗長約 21 ms
-const double kSmoothSec = 0.030;             // 共變異平滑
+const double kSmoothSec = 0.050;             // 共變異平滑
+const double kErbFrac = 0.5;                 // 頻率方向平均的寬度（聽覺頻帶 ERB 的幾倍；0.3–1 顆粒感都一樣低，越窄分得越開）
 const double kItdMax = 0.0002;               // 最大兩耳時間差（秒）
+const double kItdLo = 1000.0, kItdHi = 2000.0;  // 時間差只加在這以下（中間漸漸淡掉）
+const double kTopHz = 24000.0;               // 這以上不處理
 const double kExpand = 1.5;                  // 強度 1 時，中間附近的位置變成 2.5 倍
 const double kLowCut0 = 150.0, kLowCut1 = 250.0;
 
@@ -73,8 +78,10 @@ struct Sep {
     std::vector<double> win, in[2], ola[2], q[2];
     std::vector<cd> Z, tw;
     std::vector<int> rev;
-    std::vector<double> pll, prr, gate, omega;
+    std::vector<double> pll, prr, gate, omega, itdw;
     std::vector<cd> plr, L, R;
+    std::vector<int> hw;  // 每個頻率格往左右各平均幾格（約 1 ERB）
+    int kTop = 0;
     double alpha = 0;
     int qn = 0, qr = 0;  // 輸出佇列（已完成的樣本數、讀取位置）
 
@@ -111,12 +118,20 @@ struct Sep {
         R.assign(K, 0);
         gate.assign(K, 0);
         omega.assign(K, 0);
+        itdw.assign(K, 0);
+        hw.assign(K, 0);
+        kTop = std::min(K - 2, (int)(kTopHz * N / fs));
         for (int k = 0; k < K; k++) {
             double f = k * fs / N;
             double x = (std::log(std::max(f, 1e-9)) - std::log(kLowCut0)) / std::log(kLowCut1 / kLowCut0);
             x = std::min(1.0, std::max(0.0, x));
             gate[k] = std::sin(kPi / 2 * x) * std::sin(kPi / 2 * x);
             omega[k] = 2 * kPi * f;
+            double y = (std::log(std::max(f, 1e-9)) - std::log(kItdLo)) / std::log(kItdHi / kItdLo);
+            y = std::min(1.0, std::max(0.0, y));
+            itdw[k] = std::cos(kPi / 2 * y) * std::cos(kPi / 2 * y);
+            double erb = 24.7 * (4.37 * f / 1000 + 1);                 // Glasberg & Moore 1990
+            hw[k] = (int)(0.5 * kErbFrac * erb / (fs / N));
         }
         alpha = std::exp(-(double)H / (kSmoothSec * fs));
         fresh = 0;
@@ -151,16 +166,26 @@ struct Sep {
             L[k] = (a + b) * 0.5;
             R[k] = (a - b) * cd(0, -0.5);
         }
-        for (int k = 1; k < K - 1; k++) {
+        int kEnd = std::min(K - 2, kTop + hw[kTop]);
+        for (int k = 1; k <= kEnd; k++) {
             cd l = L[k], r = R[k];
             pll[k] = alpha * pll[k] + (1 - alpha) * std::norm(l);
             prr[k] = alpha * prr[k] + (1 - alpha) * std::norm(r);
             plr[k] = alpha * plr[k] + (1 - alpha) * l * std::conj(r);
+        }
+        for (int k = 1; k <= kTop; k++) {
             double g = gate[k] * s;
             if (g <= 0) continue;
-            double a = pll[k], b = prr[k], tr = a + b;
+            cd l = L[k], r = R[k];
+            double a = 0, b = 0;
+            cd c = 0;
+            for (int j = std::max(1, k - hw[k]); j <= std::min(kEnd, k + hw[k]); j++) {  // 頻率方向平均（約 1 ERB）
+                a += pll[j];
+                b += prr[j];
+                c += plr[j];
+            }
+            double tr = a + b;
             if (!(tr > 1e-24)) continue;
-            cd c = plr[k];
             double d = std::sqrt((a - b) * (a - b) + 4 * std::norm(c));
             double l1 = 0.5 * (tr + d), l2 = 0.5 * (tr - d);
             cd vL, vR;
@@ -180,7 +205,7 @@ struct Sep {
             double aL0 = std::abs(vL), aR0 = std::abs(vR);
             cd uL = (aL0 > 1e-12 ? vL / aL0 : cd(1, 0)) * std::sqrt(0.5 * (1 + p2));
             cd uR = (aR0 > 1e-12 ? vR / aR0 : cd(1, 0)) * std::sqrt(0.5 * (1 - p2));
-            double tau = kItdMax * g * p2;                          // 偏左 → 右耳晚到
+            double tau = kItdMax * g * p2 * itdw[k];                // 偏左 → 右耳晚到（只在低頻）
             if (tau > 0) uR *= std::polar(1.0, -omega[k] * tau);
             else if (tau < 0) uL *= std::polar(1.0, omega[k] * tau);
             L[k] = uL * sp + aL;

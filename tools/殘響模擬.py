@@ -1,6 +1,8 @@
 """殘響模擬 v5：用顯示卡（GPU）在真實形狀的房間裡做聲學模擬，產生調音台用的殘響檔。
 執行：python 殘響模擬.py [房間…] [--quick]（--quick＝聲線少、快速試算）
-　　　python 殘響模擬.py --heads <解壓的 SOFA 資料夾>（做所有頭的試聽檔）；--use <代號> [--render]（換頭，加 --render 接著重算全部房間）
+　　　python 殘響模擬.py --heads <解壓的 SOFA 資料夾>（做所有頭的試聽檔）
+　　　python 殘響模擬.py --head <代號> [房間…]（用那個人的頭算，存到 殘響/頭部/<代號>/；調音台可以當成另一個「頭型」切換；
+　　　　代號用逗號隔開（H3,H4,…）＝幾個頭一起算：房間只算一次，時間跟一個頭差不多）
 
 做法（建築聲學軟體的「混合法」：Vorländer《Auralization》2008；ODEON、RAVEN 的架構）
 1. 房間形狀：平面多邊形組成（陽台、欄杆、舞台、包廂、窗、吸音板…），每一面有自己的材質（9 個八度頻段的吸音、散射係數）
@@ -43,6 +45,11 @@ EAR = math.radians(100)         # 耳朵在正前方左右 100°（稍微偏後�
 N_DIR = 128
 SPK_DELAY = 0.002              # 虛擬喇叭檔整體延遲（秒）
 QUICK = "--quick" in sys.argv
+HEAD_ARG = sys.argv[sys.argv.index("--head") + 1] if "--head" in sys.argv else None
+HEAD_IDS = HEAD_ARG.split(",") if HEAD_ARG else []  # 用真人的頭算 → 各自另存一組；逗號隔開＝房間只算一次，幾個頭共用
+HEAD_ID = HEAD_IDS[0] if HEAD_IDS else None
+if HEAD_ID:
+    OUT = os.path.join(HERE, "殘響", "頭部", HEAD_ID)
 if QUICK:  # 試算不蓋掉正式的殘響檔
     OUT = os.path.join(os.environ.get("TEMP", HERE), "殘響試算")
 RAYS = 1 << (20 if QUICK else 25)
@@ -254,19 +261,12 @@ def minphase(mag):
 HRTF_FILE = os.path.join(HERE, "殘響", "hrtf_ku100.npz")
 HRTF_TAPS = 1024
 HEADS_DIR = os.path.join(HERE, "殘響", "頭部")      # 可以挑的頭：KU100 假人頭＋SADIE II 的 18 位真人（H3–H20）
-HEAD_SEL = os.path.join(HERE, "殘響", "頭部.json")  # 調音台「挑頭部量測」選好的（沒有＝KU100）
 
 
 def head_path():
-    """現在用的頭部量測檔"""
-    try:
-        with open(HEAD_SEL, encoding="utf-8") as fh:
-            p = os.path.join(HEADS_DIR, json.load(fh)["id"] + ".npz")
-        if os.path.exists(p):
-            return p
-    except (OSError, ValueError, KeyError):
-        pass
-    return HRTF_FILE
+    """這次模擬用的頭部量測檔：--head 指定的真人，沒有就是 KU100（主要那一組）"""
+    p = os.path.join(HEADS_DIR, f"{HEAD_ID}.npz") if HEAD_ID else ""
+    return p if HEAD_ID and os.path.exists(p) else HRTF_FILE
 
 
 def save_atomic(path, data):
@@ -275,7 +275,27 @@ def save_atomic(path, data):
     os.replace(path + ".tmp", path)  # 寫完才換：調音台不會讀到寫一半的檔
 
 
-def build_hrtf(sofa, out=HRTF_FILE, name="SADIE II KU100", pair_out=os.path.join(HERE, "殘響", "hrtf30.npy")):
+def symmetrize(U, he):
+    """左右對稱化：真人兩耳不完全一樣（耳廓、量測時頭的位置），正中間的聲音（人聲）到兩耳會有一點差 → 結像變散。
+    以左耳為準：右耳＝鏡像方向的左耳（時間、兩耳時間差都是左耳量到的，不重算）；頻率響應的大小再修成
+    「這個方向的左耳＋鏡像方向的右耳」的能量平均（最小相位的修正濾波，最多 ±12 dB）→ 完全左右對稱，耳廓線索保留"""
+    k, _e, n = he.shape
+    V = U * [1, -1, 1]
+    m = np.concatenate([np.argmax(V[i:i + 1000] @ U.T, 1) for i in range(0, k, 1000)])  # 每個方向的鏡像方向
+    nf = 4 * n
+    w = np.zeros(nf)
+    w[0], w[1:nf // 2], w[nf // 2] = 1, 2, 1
+    L = np.empty((k, n))
+    for i in range(0, k, 500):
+        j = slice(i, i + 500)
+        HL, HR = np.fft.rfft(he[j, 0], nf), np.fft.rfft(he[m[j], 1], nf)
+        ratio = np.clip(np.sqrt((np.abs(HL) ** 2 + np.abs(HR) ** 2) / 2) / np.maximum(np.abs(HL), 1e-9), 0.25, 4)
+        fix = np.exp(np.fft.rfft(np.fft.irfft(np.log(ratio), nf, axis=1) * w, nf, axis=1))  # 最小相位
+        L[j] = np.fft.irfft(HL * fix, nf, axis=1)[:, :n]
+    return np.stack([L, L[m]], 1)
+
+
+def build_hrtf(sofa, out=HRTF_FILE, name="SADIE II KU100", pair_out=os.path.join(HERE, "殘響", "hrtf30.npy"), sym=False):
     """SOFA → hrtf_ku100.npz（方向：前、左、上；兩耳脈衝響應 96 kHz、擴散場等化；t0＝正前方的到達時間）
     ＋ hrtf30.npy（左前 30° 喇叭到同側耳、對側耳，左右對稱平均；調音台的交叉饋送用）"""
     import h5py
@@ -300,6 +320,9 @@ def build_hrtf(sofa, out=HRTF_FILE, name="SADIE II KU100", pair_out=os.path.join
     he = np.fft.irfft(Hs * eq, n, axis=2)[:, :, :HRTF_TAPS]
     q = HRTF_TAPS // 8
     he[:, :, -q:] *= np.cos(np.linspace(0, np.pi / 2, q)) ** 2
+    if sym:
+        he = symmetrize(U, he)
+        he[:, :, -q:] *= np.cos(np.linspace(0, np.pi / 2, q)) ** 2
     kf = int(np.argmax(U @ [1.0, 0, 0]))
     t0 = float(np.argmax(np.abs(he[kf]).sum(0))) / FS    # 正前方的聲音在這個時間到兩耳 → 模擬裡當成時間 0
     np.savez(out, dirs=U.astype("<f4"), hrir=he.astype("<f4"), t0=t0, name=name)
@@ -960,7 +983,27 @@ def hybrid(rev, lfs, f, xos):
     return np.fft.irfft(Y, nf, axis=1)[:, :rev.shape[1]]
 
 
-def render(name):
+PROGRESS = os.path.join(HERE, "殘響", "進度.json")  # 給調音台的「房間模擬」視窗看
+_PROG = {}
+
+
+def progress(**kw):
+    """更新進度檔（寫完才換，調音台不會讀到一半）"""
+    if QUICK:
+        return
+    _PROG.update(kw, updated=time.time())
+    try:
+        with open(PROGRESS + ".tmp", "w", encoding="utf-8") as fh:
+            json.dump(_PROG, fh, ensure_ascii=False)
+        os.replace(PROGRESS + ".tmp", PROGRESS)
+    except OSError:
+        pass
+
+
+def render(name, heads=None):
+    """heads：[(頭部量測檔, 存放的資料夾)]。房間（校正吸音、波動模擬、聲線追蹤、後段脈衝）只算一次，
+    只有「經過頭部」那一步每個頭各自做 → 幾個頭一起算跟分開算結果一樣，時間差不多只要一個頭"""
+    heads = heads or [(head_path(), OUT)]
     t0 = time.time()
     scene = SCENES[name]()
     G = Geometry(scene)
@@ -972,6 +1015,7 @@ def render(name):
     t_end = T.max() * 1.25 + 0.2
     dtab = directivity(scene["src_a"])
     base = np.array([MAT[m][0] for m in MAT_NAMES])
+    progress(current=name, stage="校正吸音", room_started=time.time())
     # 1) 校正吸音：跟最後一樣的組合（鏡像法＋聲線追蹤）→ 量殘響時間 → 依比例調整（空氣吸收不調；到不了的頻段停在下限）
     k_b = np.ones(NB)
     src0 = scene["src"][0]
@@ -991,27 +1035,32 @@ def render(name):
     W = torch.tensor(band_weights(f), device=DEV, dtype=torch.float32)
     lim = torch.tensor(np.clip((21000 - f) / 3000, 0, 1) ** 2 * np.clip((f - 10) / 20, 0, 1) ** 2, device=DEV)
     ft = torch.tensor(f, device=DEV, dtype=torch.float64)
-    head = Head(fwd, left, nfft)
-    Hlate = head.spec(dirs)                                                                     # (128 方向, 2 耳, 頻率)
-    ir = np.zeros((n_len, 4))
-    spk = np.zeros((n_len, 4)) if scene.get("spk") else None
-    rep = {"volume_m3": round(V), "alpha_scale": k_b.round(3).tolist(), "head": head.kind, "sources": []}
-    lf, rep["fdtd"] = fdtd(scene, alpha, T, n_len, left)   # 低頻：波動模擬（從聲線校正後的吸音開始）
+    hs = [Head(fwd, left, nfft, p) for p, _o in heads]
+    Hlates = [h.spec(dirs) for h in hs]                                                         # (128 方向, 2 耳, 頻率)
+    irs = [np.zeros((n_len, 4)) for _h in hs]
+    spks = [np.zeros((n_len, 4)) if scene.get("spk") else None for _h in hs]
+    progress(stage="低頻波動模擬")
+    lf, fd_rep = fdtd(scene, alpha, T, n_len, left)   # 低頻：波動模擬（從聲線校正後的吸音開始）
+    reps = [{"volume_m3": round(V), "alpha_scale": k_b.round(3).tolist(), "head": h.kind, "sources": [], "fdtd": fd_rep}
+            for h in hs]
     xos = [xo for xo, _b in fd_runs(scene)]
-    print(name, "FDTD", rep["fdtd"], flush=True)
+    print(name, "FDTD", fd_rep, flush=True)
     for si, src in enumerate(scene["src"]):
+        progress(stage=f"聲線追蹤（{'左' if si == 0 else '右'}聲源）")
         hf, hd, direct, leaks = trace(G, scene, alpha, src, RAYS, t_end, scene["order"], False, 1 + si, dirs, dtab)
         d0 = float(np.linalg.norm(np.subtract(src, scene["rcv"])))
         Es = smooth(hf)
         paths = ism(G, scene, alpha, src, scene["order"], dtab)
-        Y = torch.zeros(2, len(f), device=DEV, dtype=torch.complex64)
+        Ys = [torch.zeros(2, len(f), device=DEV, dtype=torch.complex64) for _h in hs]
         # 2) 早期反射：每條路徑在頻率域放進去（精確的小數延遲），經過頭部模型
         for c0 in range(0, len(paths), 64):
             part = paths[c0:c0 + 64]
             A = torch.tensor(np.array([p[2] for p in part]), device=DEV, dtype=torch.float32) @ W   # (路徑, 頻率)
             tt = torch.tensor([p[0] for p in part], device=DEV, dtype=torch.float64)
             ph = torch.exp(-2j * math.pi * torch.remainder(ft[None] * tt[:, None], 1.0)).to(torch.complex64)
-            Y += ((A * ph)[:, None] * head.spec([p[1] for p in part])).sum(0)
+            Aph = (A * ph)[:, None]
+            for Y, h in zip(Ys, hs):
+                Y += (Aph * h.spec([p[1] for p in part])).sum(0)
         # 3) 後段：依回聲密度產生隨機正負脈衝，方向照聲線追蹤的方向分佈
         g = torch.Generator(device=DEV).manual_seed(77 + si)
         hds = hd.copy()
@@ -1047,52 +1096,56 @@ def render(name):
             tt = ii[m][None].expand(NB, -1).reshape(-1)
             tr.index_put_((dd, bb, tt), amp[:, m].reshape(-1), accumulate=True)
             sp = (torch.fft.rfft(tr, dim=2) * W[None]).sum(1)                           # (8, 頻率)
-            Y += (sp[:, None] * Hlate[c0:c0 + 8]).sum(0)
+            for Y, Hlate in zip(Ys, Hlates):
+                Y += (sp[:, None] * Hlate[c0:c0 + 8]).sum(0)
             del tr, sp
-        Y *= lim[None].to(torch.complex64)
-        rev = torch.fft.irfft(Y, n=nfft)[:, :n_len].double().cpu().numpy()
-        R1, R2 = np.fft.rfft(rev, nfft, axis=1), np.fft.rfft(lf[-1][si], nfft, axis=1)
-        xb = (f >= xos[-1][0]) & (f <= xos[-1][1])
-        xo_db = 10 * math.log10((np.abs(R2[:, xb]) ** 2).sum() / max((np.abs(R1[:, xb]) ** 2).sum(), 1e-30))
         k1 = int(0.001 * FS)
         leak_db = 10 * math.log10(max((lf[0][si][:, :k1] ** 2).sum(), 1e-30) / max((lf[0][si] ** 2).sum(), 1e-30))
-        # 交越帶對齊：聲線法的殘響整體偏小（實測比 Barron 修正理論小約 7 dB；波動模擬只差約 0–2 dB），
-        # 調音台會把整體大小重新縮放，所以只要頻率之間的比例對：交越帶裡讓波動模擬跟聲線一樣大，低頻的形狀照波動模擬
-        rev = hybrid(rev, [x[si] * 10 ** (-xo_db / 20) for x in lf], f, xos)
-        fade = int(0.05 * FS)
-        rev[:, -fade:] *= np.cos(np.linspace(0, np.pi / 2, fade)) ** 2
-        # 4) 檢查（物理上的房間，還沒依直達/殘響比縮放）
-        met = metrics(paths, Es, hd, d0, rev, scene, left, dirs, head, nfft, src)
-        A_sab = 0.161 * V / T[2]
-        met.update(xo_wave_vs_ray_dB=round(xo_db, 1), wave_first_ms_dB=round(leak_db, 1),
-                   xo_ray_rev_dB=round(10 * math.log10((np.abs(R1[:, xb]) ** 2).mean()), 1),
-                   xo_wave_rev_dB=round(10 * math.log10((np.abs(R2[:, xb]) ** 2).mean()), 1),
-                   diffuse_theory_dB=round(10 * math.log10(16 * math.pi * d0 ** 2 / A_sab), 1),
-                   ray_rev_by_band_dB=[round(10 * math.log10((np.abs(R1[:, (f >= fb / 1.41) & (f < fb * 1.41)]) ** 2).mean()), 1)
-                                       for fb in (63, 125, 250, 500, 1000, 2000, 4000)],
-                   theory_by_band_dB=[round(10 * math.log10(16 * math.pi * d0 ** 2 / (0.161 * V / tb)), 1) for tb in T[:7]])
-        met.update(direct_check=round(direct, 2), leaks=leaks, paths=len(paths),
-                   paths_by_order=[sum(1 for p in paths if p[3] == k) for k in range(1, scene["order"] + 1)],
-                   first_ms=round(min(p[0] for p in paths) * 1000, 1) if paths else None)
-        rep["sources"].append(met)
-        if spk is not None:  # 虛擬喇叭：直達聲（經過頭部）＋房間反射，保留真實的比例；整體晚 2 ms（同側耳比正前方早到）
-            D0 = int(SPK_DELAY * FS)
-            hcut = torch.tensor(np.clip((21000 - f) / 3000, 0, 1) ** 2, device=DEV).to(torch.complex64)
-            dr = torch.fft.irfft(head.spec([np.subtract(src, scene["rcv"])])[0] * hcut, n=nfft).double().cpu().numpy()
-            full = np.roll(dr, D0, axis=1)[:, :n_len]
-            full[:, D0:] += rev[:, :n_len - D0]
-            spk[:, si] = full[si]
-            spk[:, 2 + si] = full[1 - si]
-        rev /= math.sqrt((rev ** 2).sum())  # 兩耳總能量＝1（調音台再依直達/殘響比縮放）
-        ir[:, si] = rev[si]                 # 左聲源：0＝左耳（L→L）、2＝右耳（L→R）；右聲源：1＝右耳、3＝左耳
-        ir[:, 2 + si] = rev[1 - si]
+        for Y, head, rep, ir, spk in zip(Ys, hs, reps, irs, spks):
+            Y *= lim[None].to(torch.complex64)
+            rev = torch.fft.irfft(Y, n=nfft)[:, :n_len].double().cpu().numpy()
+            R1, R2 = np.fft.rfft(rev, nfft, axis=1), np.fft.rfft(lf[-1][si], nfft, axis=1)
+            xb = (f >= xos[-1][0]) & (f <= xos[-1][1])
+            xo_db = 10 * math.log10((np.abs(R2[:, xb]) ** 2).sum() / max((np.abs(R1[:, xb]) ** 2).sum(), 1e-30))
+            # 交越帶對齊：聲線法的殘響整體偏小（實測比 Barron 修正理論小約 7 dB；波動模擬只差約 0–2 dB），
+            # 調音台會把整體大小重新縮放，所以只要頻率之間的比例對：交越帶裡讓波動模擬跟聲線一樣大，低頻的形狀照波動模擬
+            rev = hybrid(rev, [x[si] * 10 ** (-xo_db / 20) for x in lf], f, xos)
+            fade = int(0.05 * FS)
+            rev[:, -fade:] *= np.cos(np.linspace(0, np.pi / 2, fade)) ** 2
+            # 4) 檢查（物理上的房間，還沒依直達/殘響比縮放）
+            met = metrics(paths, Es, hd, d0, rev, scene, left, dirs, head, nfft, src)
+            A_sab = 0.161 * V / T[2]
+            met.update(xo_wave_vs_ray_dB=round(xo_db, 1), wave_first_ms_dB=round(leak_db, 1),
+                       xo_ray_rev_dB=round(10 * math.log10((np.abs(R1[:, xb]) ** 2).mean()), 1),
+                       xo_wave_rev_dB=round(10 * math.log10((np.abs(R2[:, xb]) ** 2).mean()), 1),
+                       diffuse_theory_dB=round(10 * math.log10(16 * math.pi * d0 ** 2 / A_sab), 1),
+                       ray_rev_by_band_dB=[round(10 * math.log10((np.abs(R1[:, (f >= fb / 1.41) & (f < fb * 1.41)]) ** 2)
+                                                                 .mean()), 1) for fb in (63, 125, 250, 500, 1000, 2000, 4000)],
+                       theory_by_band_dB=[round(10 * math.log10(16 * math.pi * d0 ** 2 / (0.161 * V / tb)), 1) for tb in T[:7]])
+            met.update(direct_check=round(direct, 2), leaks=leaks, paths=len(paths),
+                       paths_by_order=[sum(1 for p in paths if p[3] == k) for k in range(1, scene["order"] + 1)],
+                       first_ms=round(min(p[0] for p in paths) * 1000, 1) if paths else None)
+            rep["sources"].append(met)
+            if spk is not None:  # 虛擬喇叭：直達聲（經過頭部）＋房間反射，保留真實的比例；整體晚 2 ms（同側耳比正前方早到）
+                D0 = int(SPK_DELAY * FS)
+                hcut = torch.tensor(np.clip((21000 - f) / 3000, 0, 1) ** 2, device=DEV).to(torch.complex64)
+                dr = torch.fft.irfft(head.spec([np.subtract(src, scene["rcv"])])[0] * hcut, n=nfft).double().cpu().numpy()
+                full = np.roll(dr, D0, axis=1)[:, :n_len]
+                full[:, D0:] += rev[:, :n_len - D0]
+                spk[:, si] = full[si]
+                spk[:, 2 + si] = full[1 - si]
+            rev /= math.sqrt((rev ** 2).sum())  # 兩耳總能量＝1（調音台再依直達/殘響比縮放）
+            ir[:, si] = rev[si]                 # 左聲源：0＝左耳（L→L）、2＝右耳（L→R）；右聲源：1＝右耳、3＝左耳
+            ir[:, 2 + si] = rev[1 - si]
+        del Ys
         torch.cuda.empty_cache()
-    rep.update(target=T.round(2).tolist(), seconds=round(time.time() - t0, 1), length_s=round(n_len / FS, 2),
-               rays_per_source=RAYS)
-    for key, data in ((name, ir), (f"{name}_spk", spk)):
-        if data is not None:
-            save_atomic(os.path.join(OUT, f"{key}.npy"), data)
-    return rep
+    for (_p, out), ir, spk, rep in zip(heads, irs, spks, reps):
+        rep.update(target=T.round(2).tolist(), seconds=round(time.time() - t0, 1), length_s=round(n_len / FS, 2),
+                   rays_per_source=RAYS)
+        for key, data in ((name, ir), (f"{name}_spk", spk)):
+            if data is not None:
+                save_atomic(os.path.join(out, f"{key}.npy"), data)
+    return reps
 
 
 def spk_direct(path):
@@ -1127,24 +1180,13 @@ def build_heads(src_dir):
     for sofa in sorted(glob.glob(os.path.join(src_dir, "**", "H*_96K_*.sofa"), recursive=True)):
         hid = os.path.basename(sofa).split("_")[0]
         if not os.path.exists(os.path.join(HEADS_DIR, hid + ".npz")):
-            build_hrtf(sofa, os.path.join(HEADS_DIR, hid + ".npz"), f"SADIE II {hid}",
-                       os.path.join(HEADS_DIR, hid + "_30.npy"))
+            build_hrtf(sofa, os.path.join(HEADS_DIR, hid + ".npz"), f"SADIE II {hid}（對稱化）",
+                       os.path.join(HEADS_DIR, hid + "_30.npy"), sym=True)
     base = np.load(os.path.join(HERE, "殘響", "studio_spk.npy")).astype(float) - spk_direct(head_path())
     for p in sorted(glob.glob(os.path.join(HEADS_DIR, "*.npz"))):
         hid = os.path.basename(p)[:-4]
         save_atomic(os.path.join(HEADS_DIR, hid + "_spk.npy"), base + spk_direct(p))
         print("試聽檔", hid, flush=True)
-
-
-def use_head(hid):
-    """改用這個頭：交叉饋送、虛擬喇叭先換成試聽檔（之後重算房間會再換成完整的）"""
-    import shutil
-    for src, dst in ((hid + "_30.npy", "hrtf30.npy"), (hid + "_spk.npy", "studio_spk.npy")):
-        dst = os.path.join(HERE, "殘響", dst)
-        shutil.copy(os.path.join(HEADS_DIR, src), dst + ".tmp")
-        os.replace(dst + ".tmp", dst)
-    with open(HEAD_SEL, "w", encoding="utf-8") as fh:
-        json.dump({"id": hid}, fh)
 
 
 def energy_curve(paths, Es, d0):
@@ -1207,23 +1249,30 @@ def main():
     if "--heads" in sys.argv:  # 做所有頭的試聽檔
         build_heads(sys.argv[sys.argv.index("--heads") + 1])
         return
-    args = sys.argv[1:]
-    if "--use" in args:  # 改用某個頭；加 --render 接著重算全部房間
-        hid = args[args.index("--use") + 1]
-        use_head(hid)
-        args = [a for a in args if a != hid]
-        if "--render" not in args:
-            return
+    args = [a for a in sys.argv[1:] if a != HEAD_ARG]
+    heads = [(os.path.join(HEADS_DIR, h + ".npz"), OUT if len(HEAD_IDS) == 1 else os.path.join(os.path.dirname(OUT), h))
+             for h in HEAD_IDS] or [(head_path(), OUT)]
+    for h, (_p, out) in zip(HEAD_IDS, heads):  # 另存一組：交叉饋送用的 30° 量測也放進去
+        import shutil
+        os.makedirs(out, exist_ok=True)
+        shutil.copy(os.path.join(HEADS_DIR, h + "_30.npy"), os.path.join(out, "hrtf30.npy"))
     names = [a for a in args if not a.startswith("--")] or list(SCENES)
-    path = os.path.join(OUT, "結果.json")
-    report = json.load(open(path, encoding="utf-8")) if os.path.exists(path) else {}
-    report.update(device=torch.cuda.get_device_name(0) if DEV == "cuda" else "CPU", version=5)
+    paths = [os.path.join(out, "結果.json") for _p, out in heads]
+    reports = [json.load(open(p, encoding="utf-8")) if os.path.exists(p) else {} for p in paths]
+    for r in reports:
+        r.update(device=torch.cuda.get_device_name(0) if DEV == "cuda" else "CPU", version=5)
+    progress(head=",".join(HEAD_IDS) or "KU100", rooms=names, done=[], current=None, stage="", started=time.time(),
+             pid=os.getpid(), finished=None)
     for name in names:
-        report[name] = render(name)
-        print(name, json.dumps(report[name], ensure_ascii=False), flush=True)
+        for r, rep in zip(reports, render(name, heads)):
+            r[name] = rep
+        progress(done=_PROG["done"] + [name], current=None)
+        print(name, json.dumps(reports[0][name], ensure_ascii=False), flush=True)
         if not QUICK:
-            with open(path, "w", encoding="utf-8") as fh:
-                json.dump(report, fh, ensure_ascii=False, indent=1)
+            for p, r in zip(paths, reports):
+                with open(p, "w", encoding="utf-8") as fh:
+                    json.dump(r, fh, ensure_ascii=False, indent=1)
+    progress(finished=time.time(), stage="")
 
 
 if __name__ == "__main__":
