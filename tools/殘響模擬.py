@@ -106,8 +106,20 @@ def studio():
           rect(2, 0.02, 2.4, 4.0, 1.4, 3.6, "absorber"),                    # 喇叭和聽者之間的厚地毯（地板反射）
           rect(0, L - 0.03, 0.5, W - 0.5, 0.4, 2.4, "diffuser")]            # 後牆擴散板
     # 兩個喇叭跟聽者成正三角形（底邊 2.4 m，±30°），高度跟耳朵一樣 1.2 m（BS.1116）
-    return dict(polys=P, src=[(2.12, 1.3, 1.2), (2.12, 3.7, 1.2)], rcv=(4.2, 2.5, 1.2), src_a=0.12,
+    return dict(polys=P, src=[(2.12, 1.3, 1.2), (2.12, 3.7, 1.2)], rcv=(4.2, 2.5, 1.2), src_a=0.12, monitor=True,
                 rt=(0.25, 1.0, 0.9), order=5, spk=True, fd_edges=[354, 707, 1414])
+
+
+def studio_sur():
+    """同一間錄音室，側後方 ±110°、離 2 m 的一對環繞喇叭（ITU-R BS.775 是 100–120°）：調音台「環繞」把環境音送到這裡"""
+    s = studio()
+    R, aim = np.array(s["rcv"]), np.mean(s["src"], 0)
+    fwd = (aim - R) / np.linalg.norm(aim - R)
+    left = np.cross([0, 0, 1.0], fwd)
+    s["src"] = [tuple(R + 2.0 * (math.cos(math.radians(110)) * fwd + sg * math.sin(math.radians(110)) * left))
+                for sg in (1, -1)]
+    s["aim"] = tuple(aim)  # 聽者還是面向前面那對喇叭
+    return s
 
 
 def club():
@@ -118,8 +130,9 @@ def club():
           rect(1, 2, 21.5, L, 0, 1.1, "wood"), rect(1, 14, 21.5, L, 0, 1.1, "wood"),
           rect(1, 0.05, 7, 19, 2.5, 6.0, "curtain"), rect(1, W - 0.05, 7, 19, 2.5, 6.0, "curtain")]  # 側牆吸音簾
     # 舞台兩側 PA 喇叭離聽者 12 m，站著聽；PA 箱比較大 → 球半徑 0.35 m，指向性比較強
+    # 波動模擬（含繞射、房間共振）算到 500 Hz 頻段（交越約 600–840 Hz）；以上用聲線
     return dict(polys=P, src=[(3.0, 4.0, 3.0), (3.0, 12.0, 3.0)], rcv=(15.0, 8.0, 1.6), src_a=0.35,
-                rt=(0.8, 0.9, 0.8), order=4)
+                rt=(0.8, 0.9, 0.8), order=4, fd_edges=[354, 707])
 
 
 def opera():
@@ -166,7 +179,7 @@ def hall(rcv):
     return dict(polys=P, src=[(5.0, 4.9, 2.5), (5.0, 14.9, 2.5)], rcv=rcv, src_a=None, rt=(2.0, 1.2, 0.75), order=4)
 
 
-SCENES = {"studio": studio, "club": club, "opera": opera,
+SCENES = {"studio": studio, "studio_sur": studio_sur, "club": club, "opera": opera,
           "hall_front": lambda: hall((16.0, 9.9, 1.2)), "hall_mid": lambda: hall((26.0, 9.9, 1.2))}
 
 
@@ -189,9 +202,24 @@ def air_db_per_m(f, T=293.15, rh=50.0):
 M_AIR = air_db_per_m(BANDS) / (10 * math.log10(math.e))  # 能量衰減（1/m）
 
 
-def sphere(f, theta, a):
+def cap_weights(M, cap):
+    """球面上一塊半角 cap 的振動圓片（喇叭單體），速度分佈的 Legendre 係數 ×2（Morse & Ingard 1968 §7.2）；
+    cap → 0 時跟點聲源的 (2m+1) 成正比"""
+    c0 = math.cos(cap)
+    P = np.zeros(M + 2)
+    P[0], P[1] = 1, c0
+    for m in range(1, M + 1):
+        P[m + 1] = ((2 * m + 1) * c0 * P[m] - m * P[m - 1]) / (m + 1)
+    w = np.empty(M + 1)
+    w[0] = 1 - c0
+    w[1:] = P[:M] - P[2:M + 2]
+    return w
+
+
+def sphere(f, theta, a, cap=None):
     """剛性球（半徑 a）表面一點，平面波從 theta 角來（0＝正對）的頻率響應：Duda & Martens 1998 的級數解。
-    用 numpy 的時間慣例（延遲＝e^{-j2πfτ}）；互易原理：也等於球面上點聲源往 theta 方向的輻射"""
+    用 numpy 的時間慣例（延遲＝e^{-j2πfτ}）；互易原理：也等於球面上點聲源往 theta 方向的輻射。
+    cap＝振動圓片的半角（弧度）：喇叭單體有大小，高頻會往前集中"""
     f = np.asarray(f, float)
     H = np.ones((len(theta), len(f)), complex)
     x = 2 * np.pi * f * a / C
@@ -211,7 +239,8 @@ def sphere(f, theta, a):
         mm = np.arange(M + 1)[:, None]
         dh[1:] = h[:-2] - (mm[1:] + 1) / x * h[1:-1]
         use = (mm <= x + 10 * x ** (1 / 3) + 20) & np.isfinite(dh) & (np.abs(dh) > 0)
-        coef = np.where(use, (-1j) ** (mm - 1.0) * (2 * mm + 1) / np.where(use, dh, 1), 0)
+        w = (2 * mm + 1.0) if cap is None else cap_weights(M, cap)[:, None]
+        coef = np.where(use, (-1j) ** (mm - 1.0) * w / np.where(use, dh, 1), 0)
     c = np.cos(theta)
     P = np.zeros((len(theta), M + 1))
     P[:, 0] = 1
@@ -363,13 +392,25 @@ class Head:
         return torch.fft.rfft(h, n=self.nfft) * self.shift
 
 
-def directivity(a):
-    """聲源指向性（181 個角度 × 9 頻段，正對聽者＝1）：剛性球上的點聲源；None＝全指向"""
+WOOFER, TWEETER, XO_SPK = 0.083, 0.0125, 2000.0  # 兩音路監聽喇叭：6.5 吋低音、1 吋高音、2 kHz 分頻（LR4）
+
+
+def directivity(a, monitor=False):
+    """聲源指向性（181 個角度 × 9 頻段，正對聽者＝1）：剛性球上的點聲源；None＝全指向；
+    monitor＝兩音路監聽喇叭（球上兩塊振動圓片照分頻器分配能量）：低音單體 1 kHz 以上開始往前集中，
+    分頻後換成小高音、又變寬，再往高頻慢慢集中——跟真實監聽喇叭的指向性一樣"""
     if a is None:
         return np.ones((181, NB))
     fs_ = np.concatenate([BANDS * 2 ** (-1 / 3), BANDS, BANDS * 2 ** (1 / 3)])
-    P = np.abs(sphere(fs_, np.radians(np.arange(181)), a)) ** 2
-    P = P / P[:1]
+    th = np.radians(np.arange(181))
+    if monitor:
+        lo = np.abs(sphere(fs_, th, a, math.asin(min(WOOFER / a, 1.0)))) ** 2
+        hi = np.abs(sphere(fs_, th, a, math.asin(TWEETER / a))) ** 2
+        wl = 1 / (1 + (fs_ / XO_SPK) ** 8)  # LR4：低音分到的能量比例
+        P = wl * lo / lo[:1] + (1 - wl) * hi / hi[:1]
+    else:
+        P = np.abs(sphere(fs_, th, a)) ** 2
+        P = P / P[:1]
     return P.reshape(181, 3, NB).mean(1)
 
 
@@ -645,7 +686,7 @@ def decay_time(row, lo, hi):
 def frame(scene):
     """聽者的方向：面向兩個聲源的中間（水平），左邊＝上 × 前"""
     R = np.array(scene["rcv"])
-    fwd = np.mean(scene["src"], 0) - R
+    fwd = np.array(scene.get("aim", np.mean(scene["src"], 0))) - R  # 環繞喇叭的房間：還是面向前方
     fwd[2] = 0
     fwd /= np.linalg.norm(fwd)
     left = np.cross([0, 0, 1.0], fwd)
@@ -1013,7 +1054,7 @@ def render(name, heads=None):
     fwd, left, _eL, _eR = frame(scene)
     n_len = int(FS * (scene["rt"][0] * max(scene["rt"][1], 1) * 1.1 + 0.03))
     t_end = T.max() * 1.25 + 0.2
-    dtab = directivity(scene["src_a"])
+    dtab = directivity(scene["src_a"], scene.get("monitor", False))
     base = np.array([MAT[m][0] for m in MAT_NAMES])
     progress(current=name, stage="校正吸音", room_started=time.time())
     # 1) 校正吸音：跟最後一樣的組合（鏡像法＋聲線追蹤）→ 量殘響時間 → 依比例調整（空氣吸收不調；到不了的頻段停在下限）
@@ -1250,9 +1291,12 @@ def main():
         build_heads(sys.argv[sys.argv.index("--heads") + 1])
         return
     args = [a for a in sys.argv[1:] if a != HEAD_ARG]
-    heads = [(os.path.join(HEADS_DIR, h + ".npz"), OUT if len(HEAD_IDS) == 1 else os.path.join(os.path.dirname(OUT), h))
+    heads = [(HRTF_FILE, os.path.join(HERE, "殘響")) if h == "KU100" else  # KU100＝主要那一組，可以跟真人一起算
+             (os.path.join(HEADS_DIR, h + ".npz"), OUT if len(HEAD_IDS) == 1 else os.path.join(os.path.dirname(OUT), h))
              for h in HEAD_IDS] or [(head_path(), OUT)]
     for h, (_p, out) in zip(HEAD_IDS, heads):  # 另存一組：交叉饋送用的 30° 量測也放進去
+        if h == "KU100":
+            continue
         import shutil
         os.makedirs(out, exist_ok=True)
         shutil.copy(os.path.join(HEADS_DIR, h + "_30.npy"), os.path.join(out, "hrtf30.npy"))

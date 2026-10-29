@@ -683,9 +683,76 @@ def sep_file(cfg_dir):
     return name
 
 
-def sep_lines(cfg_dir, name, strength):
-    chunk = base64.b64encode(f"strength={strength:.3f}".encode()).decode()
-    return [f'VSTPlugin: Library "{os.path.join(cfg_dir, name)}" ChunkData "{chunk}"']
+def sep_lines(cfg_dir, name, strength, sur=0.0):
+    """分離度外掛的設定。sur＞0＝環繞：同一個外掛載兩次（分解完全一樣），L R 只留前方、
+    SL SR（複本）只留環境音 → sur_lines 送到側後方的虛擬環繞喇叭"""
+    lib = os.path.join(cfg_dir, name)
+
+    def chunk(text):
+        return base64.b64encode(text.encode()).decode()
+    if not sur:
+        return [f'VSTPlugin: Library "{lib}" ChunkData "{chunk(f"strength={strength:.3f}")}"']
+    return ["Copy: SL=L SR=R", "Channel: L R",
+            f'VSTPlugin: Library "{lib}" ChunkData "{chunk(f"strength={strength:.3f};mode=1;amb={sur:.3f}")}"',
+            "Channel: SL SR",
+            f'VSTPlugin: Library "{lib}" ChunkData "{chunk(f"strength={strength:.3f};mode=2;amb={sur:.3f}")}"',
+            "Channel: all"]
+
+
+# 環繞：分離度外掛分出來的環境音（殘響、掌聲、空間感）送到錄音室側後方 ±110°、離 2 m 的一對虛擬喇叭
+# （tools/殘響模擬.py 的 studio_sur：經過頭部量測的直達聲＋房間反射，每個頭型一份）；比前方晚 10 ms → 方向由前方決定
+# （優先效應，Dolby Pro Logic 的環繞聲道也是延遲 10–20 ms），環境音被打開到身邊，又不用另外加殘響
+SUR_LEVELS = [("關", 0.0), ("輕", 0.35), ("中", 0.6), ("強", 1.0)]
+SUR_DELAY = 0.010
+SUR_MARGIN = 1.0
+_SUR = {}
+
+
+def sur_ir(rate):
+    """環繞喇叭（4 聲道：SL→左、SR→右、SL→右、SR→左）。環境音左右不相關 → 補償成兩耳的「能量和」平直
+    （1/3 八度平滑，最多 ±12 dB）→ 音色不變；整體晚 SUR_DELAY → (陣列, 版本) 或 None"""
+    master = room_master("studio_sur_spk")
+    if master is None:
+        return None
+    key = (rate, master[1])
+    if key not in _SUR:
+        import numpy as np
+        x = _resample(master[0], rate)
+        m = len(x) + rate // 50
+        n = 1 << (2 * m - 1).bit_length()
+        X = np.fft.rfft(x, n, axis=0)
+        f = np.fft.rfftfreq(n, 1 / rate)
+        pw = np.sqrt((np.abs(X) ** 2).sum(1) / 2)
+        inv = 1 / np.maximum(smooth_third(pw), 1e-9)
+        lo, hi = np.searchsorted(f, 20), np.searchsorted(f, 20000)
+        inv[:lo], inv[hi:] = inv[lo], inv[hi - 1]
+        y = np.fft.irfft(X * minphase(np.clip(inv, 0.25, 4))[:, None], n, axis=0)[:m]
+        y[-rate // 100:] *= np.cos(np.linspace(0, np.pi / 2, rate // 100))[:, None] ** 2
+        _SUR.clear()
+        _SUR[key] = np.concatenate([np.zeros((int(SUR_DELAY * rate), 4)), y])
+    return _SUR[key], master[1]
+
+
+def sur_files(cfg_dir):
+    """每個取樣率一份環繞喇叭檔 → {取樣率: 檔名}；沒有模擬檔 → {}"""
+    tag = room_master("studio_sur_spk")
+    if tag is None:
+        return {}
+    out = {}
+    for rate in RATES:
+        name = f"sur_v1{tag[1]}_{rate}.wav"
+        if not os.path.exists(os.path.join(cfg_dir, name)):
+            write_wav(os.path.join(cfg_dir, name), sur_ir(rate)[0], rate)
+        out[rate] = name
+    return out
+
+
+def sur_lines(files):
+    out = []
+    for rate, name in sorted(files.items()):
+        out += [f"If: sampleRate == {rate}", "Copy: SXL=SL SXR=SR", "Channel: SL SR SXL SXR", f"Convolution: {name}",
+                "Channel: all", "Copy: L=L+SL+SXR R=R+SR+SXL", "EndIf:"]
+    return out
 
 
 def xfeed_lines(files):
@@ -826,7 +893,7 @@ def cleanup_reverb(cfg_dir, keep):
         spk = room_master("studio_spk")
         old_spk = fn.startswith("spk_") and fn not in keep and not (spk and fn.startswith(f"spk_v1{spk[1]}_"))
         old_sep = fn.startswith("sep_") and fn.endswith(".dll") and fn not in keep  # 舊版外掛（還在用的刪不掉，下次再刪）
-        old_xf = fn.startswith("xfeed_v3") and fn not in keep  # 換頭型前的交叉饋送檔（要用時會再做）
+        old_xf = fn.startswith(("xfeed_v3", "sur_")) and fn not in keep  # 換頭型前的交叉饋送、環繞檔（要用時會再做）
         if (fn.startswith("reverb_") and fn not in keep) or old_spk or old_sep or old_xf:
             try:
                 os.remove(os.path.join(cfg_dir, fn))
@@ -1875,7 +1942,7 @@ def apo_selftest(cfg_dir, dev):
 
 
 def build_config(filters, width=0, crossfeed=0, balance=0.0, reverb_files=None, extra=0.0, headroom=None,
-                 xfeed=None, recon=None, sep=None):
+                 xfeed=None, recon=None, sep=None, sfiles=None):
     """產生設定檔內容。音量固定降 HEADROOM（＋extra），EQ 關閉時也一樣。
     width＝聲場加寬百分比、crossfeed＝交叉饋送等級、balance＝左右平衡（正＝偏右）、reverb_files＝{取樣率: 殘響檔}、
     xfeed＝{取樣率: 交叉饋送檔}、recon＝{取樣率: 重建濾波檔}"""
@@ -1892,6 +1959,8 @@ def build_config(filters, width=0, crossfeed=0, balance=0.0, reverb_files=None, 
                   "Channel: all", "Copy: L=L+R R=L+-1*R"]  # 注意：一定要寫 -1*R，寫 -R 會變成直流訊號
     if k:  # 左右聲道差異放大 → 聲場變寬
         lines.append(f"Copy: L={1 + k:.2f}*L+{-k:.2f}*R R={1 + k:.2f}*R+{-k:.2f}*L")
+    if sfiles:  # 環繞：環境音（SL SR）經過側後方的虛擬喇叭，加回兩耳
+        lines += sur_lines(sfiles)
     if balance:  # 只壓低另一邊，不會多加音量
         side = "L" if balance > 0 else "R"
         lines.append(f"Copy: {side}={10 ** (-abs(balance) / 20):.4f}*{side}")
@@ -2150,6 +2219,7 @@ class App:
         self.eq_problem = None  # 每 2 秒在 refresh_device 更新
         self._ir_jobs, self._ir_ready, self._clean_job = set(), False, None  # 背景做殘響檔
         self.sep_level = tk.IntVar(value=int(s.get("sep", 0)))  # 分離度：關／輕／中／強（所有風格都套用）
+        self.sur_level = tk.IntVar(value=int(s.get("sur", 0)))  # 環繞：關／輕／中／強
         self._sep_name = None
         self.hf_all = s.get("hf") or {}  # 高頻校正：{耳機名稱: 測驗結果}
         self.hf_data, self.hf_on = {}, tk.BooleanVar(value=False)
@@ -2422,6 +2492,10 @@ class App:
         g = tk.Frame(c, bg=PANEL)
         g.pack(fill="x")
         self.width_lbl = self.slider_row(g, 0, "聲場寬度", "左右拉開", self.width, 0, 40, 5, 180)
+        self.sur_lbl = g.grid_slaves(row=0, column=0)[0].winfo_children()[1]  # 小字加上「環繞」，點一下切換
+        self.sur_lbl.config(cursor="hand2")
+        self.sur_lbl.bind("<Button-1>", lambda _e: self.cycle_sur())
+        self.paint_sur()
         self.cf_lbl = self.slider_row(g, 1, "交叉饋送", "最右＝虛擬喇叭", self.crossfeed, 0, 4, 1, 180, num=False)
         self.head_lbl = g.grid_slaves(row=1, column=0)[0].winfo_children()[1]  # 小字加上「頭型」，點一下挑
         self.head_lbl.config(cursor="hand2")
@@ -3282,21 +3356,28 @@ class App:
         # 用滿格母帶實際算這組設定的輸出峰值。固定預留：超過就整體多降。音量優先：只預留目前設定需要的。
         # 兩種都一樣：EQ 關掉時用同一個音量，A/B 比較才公平
         sep, sname, sv = [], None, SEP_LEVELS[int(self.sep_level.get())][1]
-        if sv and on and not test:
+        su, sfiles = SUR_LEVELS[int(self.sur_level.get())][1], {}
+        if (sv or su) and on and not test:
             try:
                 sname = sep_file(self.cfg_dir)
-                sep = sep_lines(self.cfg_dir, sname, sv) if sname else []
+                if su and sname:
+                    try:
+                        sfiles = sur_files(self.cfg_dir)
+                    except Exception as e:  # 沒有 numpy 或寫不進去
+                        note = note or f"（環繞做不出來：{e}）"
+                sep = sep_lines(self.cfg_dir, sname, sv, su if sfiles else 0.0) if sname and (sv or sfiles) else []
             except OSError as e:
                 note = note or f"（分離度外掛複製失敗：{e}）"
         self._sep_name = sname if sep else None
-        need = true_peak(filters, width, cf, room if files else 0, hires) + SAFETY + (SEP_MARGIN if sep else 0)
+        need = (true_peak(filters, width, cf, room if files else 0, hires) + SAFETY + (SEP_MARGIN if sep else 0)
+                + (SUR_MARGIN if sfiles else 0))
         if self.loud.get():
             hr, extra = max(0.0, math.ceil(need * 2) / 2), 0.0
         else:
             hr, extra = HEADROOM, math.ceil(max(0.0, need - HEADROOM) * 10) / 10
         if test:
             extra += test.get("extra", 0.0)  # 偏好測驗：兩個選項的響度對齊
-        text = (build_config(filters, width, cf, self.balance.get(), files, extra, hr, xfeed, recon, sep) if on
+        text = (build_config(filters, width, cf, self.balance.get(), files, extra, hr, xfeed, recon, sep, sfiles) if on
                 else build_config([], extra=extra, headroom=hr, recon=recon))
         if through:  # 不寫 Preamp、不寫任何濾波器 → 訊號原封不動
             text = "# written by headphone tuner\n# passthrough: no processing\n"
@@ -3325,7 +3406,7 @@ class App:
         # 舊的殘響檔等 Equalizer APO 換成新設定後再刪（其他裝置正在用的不刪）
         if self._clean_job:
             self.root.after_cancel(self._clean_job)
-        keep = set(files.values()) | set(xfeed.values()) | {self._sep_name} | self.reverb_in_use()
+        keep = set(files.values()) | set(xfeed.values()) | set(sfiles.values()) | {self._sep_name} | self.reverb_in_use()
         self._clean_job = self.root.after(5000, lambda: cleanup_reverb(self.cfg_dir, keep))
 
     def reverb_files(self, room):
@@ -3395,6 +3476,17 @@ class App:
         lv = int(self.sep_level.get())
         self.sep_pill.config(text=f"分離度：{SEP_LEVELS[lv][0]}")
         self.sep_pill.set_selected(lv > 0)
+
+    def paint_sur(self):
+        lv = int(self.sur_level.get())
+        self.sur_lbl.config(text=f"左右拉開　環繞：{SUR_LEVELS[lv][0]} ▾", fg=ACCENT if lv else SUB)
+
+    def cycle_sur(self):
+        self.sur_level.set((int(self.sur_level.get()) + 1) % len(SUR_LEVELS))
+        self.paint_sur()
+        self.changed()
+        lv = int(self.sur_level.get())
+        self.toast(f"環繞：{SUR_LEVELS[lv][0]}" + ("（殘響、空間感這些環境音移到身邊兩側後方，樂器和人聲留在前面）" if lv else ""))
 
     def cycle_sep(self):
         self.sep_level.set((int(self.sep_level.get()) + 1) % len(SEP_LEVELS))
@@ -4074,7 +4166,7 @@ class App:
         if self.hf_data and self.hf_key():
             self.hf_all[self.hf_key()] = {**self.hf_data, "on": self.hf_on.get()}
         data = {"presets": self.presets, "device": self.dev_guid, "follow": self.follow.get(), "profiles": self.profiles,
-                "sep": int(self.sep_level.get()), "hf": self.hf_all, "head": current_head(),
+                "sep": int(self.sep_level.get()), "sur": int(self.sur_level.get()), "hf": self.hf_all, "head": current_head(),
                 "pref": {**self.pref_data, "on": self.pref_on.get()} if self.pref_data else {}}
         try:
             with open(SETTINGS_FILE, "w", encoding="utf-8") as fh:

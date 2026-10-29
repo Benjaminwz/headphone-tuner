@@ -21,7 +21,7 @@ BLUE = (0x1E, 0x5B, 0xD8)
 WHITE = (0xFF, 0xFF, 0xFF)
 ZIP_FILES = ("耳機調音台.pyw", "安裝.bat", "說明.txt", "README.md", "LICENSE", "tuner.ico",
              "殘響/studio.npy", "殘響/hall_front.npy", "殘響/hall_mid.npy",
-             "殘響/studio_spk.npy", "殘響/hrtf30.npy", "分離度引擎/sep_v1.dll")  # 殘響：tools/殘響模擬.py 模擬好的房間
+             "殘響/studio_spk.npy", "殘響/studio_sur_spk.npy", "殘響/hrtf30.npy", "分離度引擎/sep_v1.dll")  # 殘響：tools/殘響模擬.py 模擬好的房間
 
 
 # ---------- 圖片（不用 Pillow：自己讀 PNG、寫 BMP） ----------

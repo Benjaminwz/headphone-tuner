@@ -11,7 +11,13 @@
 //    （Rayleigh 雙重理論）；第 1 版高頻也加，相位跟著推的量晃動 → 粗糙
 // 5. 150 Hz 以下、24 kHz 以上不處理（低音不分方向、超音波沒有樂器）；強度 0 時輸出＝輸入（只有固定延遲）
 //
-// 參數：Strength（0–1）。Equalizer APO 設定：VSTPlugin: Library "...\sep_v1.dll" ChunkData "<base64 的 strength=0.60>"
+// 6. 環繞（mode）：同一個外掛在設定檔裡載兩次，分解完全一樣（兩邊加起來＝只有分離度時的輸出）：
+//    mode=1 只輸出前方＝主成分＋留在前方的環境音（√(1−amb)），mode=2 只輸出環境音（√amb，150 Hz 以下、24 kHz 以上沒有）
+//    → 調音台把 mode=2 那份送到側後方 ±110° 的虛擬環繞喇叭。兩份能量加起來跟原本一樣
+//    兩聲道分出來的環境音左右幾乎反相（人聲在中間時只剩「左減右」）→ 右邊再過一個固定的全通濾波
+//    （相位 ±2.4 弧度隨頻率起伏、群延遲最多約 2.4 ms）把左右打散，兩顆環繞喇叭才不會互相抵消（Kendall 1995 的去相關）
+//
+// 參數：Strength（0–1）。Equalizer APO 設定：VSTPlugin: Library "...\sep_v1.dll" ChunkData "<base64 的 strength=0.60;mode=1;amb=0.60>"
 #include <algorithm>
 #include <atomic>
 #include <cmath>
@@ -72,6 +78,8 @@ const double kLowCut0 = 150.0, kLowCut1 = 250.0;
 struct Sep {
     AEffect fx;
     std::atomic<float> strength{0.6f};
+    std::atomic<int> mode{0};       // 0＝一般、1＝只要前方、2＝只要環境音（環繞）
+    std::atomic<float> amb{0.0f};   // 環繞：環境音送到側後方的比例
     char chunk[64];
     double fs = 0;
     int N = 0, H = 0, fresh = 0;
@@ -79,6 +87,7 @@ struct Sep {
     std::vector<cd> Z, tw;
     std::vector<int> rev;
     std::vector<double> pll, prr, gate, omega, itdw;
+    std::vector<cd> decor;  // 環繞右邊的去相關全通濾波
     std::vector<cd> plr, L, R;
     std::vector<int> hw;  // 每個頻率格往左右各平均幾格（約 1 ERB）
     int kTop = 0;
@@ -119,6 +128,7 @@ struct Sep {
         gate.assign(K, 0);
         omega.assign(K, 0);
         itdw.assign(K, 0);
+        decor.assign(K, cd(1, 0));
         hw.assign(K, 0);
         kTop = std::min(K - 2, (int)(kTopHz * N / fs));
         for (int k = 0; k < K; k++) {
@@ -132,6 +142,7 @@ struct Sep {
             itdw[k] = std::cos(kPi / 2 * y) * std::cos(kPi / 2 * y);
             double erb = 24.7 * (4.37 * f / 1000 + 1);                 // Glasberg & Moore 1990
             hw[k] = (int)(0.5 * kErbFrac * erb / (fs / N));
+            decor[k] = std::polar(1.0, 2.405 * std::sin(2 * kPi * f / 1000.0));  // 2.405＝J0 的第一個零點 → 平均相關＝0
         }
         alpha = std::exp(-(double)H / (kSmoothSec * fs));
         fresh = 0;
@@ -156,7 +167,9 @@ struct Sep {
     }
 
     void frame() {
-        double s = strength.load();
+        double s = strength.load(), am = amb.load();
+        int md = mode.load();
+        double fa = md == 1 ? std::sqrt(1 - am) : 1.0, sa = std::sqrt(am);
         for (int i = 0; i < N; i++) Z[i] = cd(in[0][i] * win[i], in[1][i] * win[i]);
         fft(false);
         int K = N / 2 + 1;
@@ -173,9 +186,12 @@ struct Sep {
             prr[k] = alpha * prr[k] + (1 - alpha) * std::norm(r);
             plr[k] = alpha * plr[k] + (1 - alpha) * l * std::conj(r);
         }
+        if (md == 2)  // 只要環境音：不處理的頻率（低音、超音波）沒有環境音
+            for (int k = 0; k < K; k++)
+                if (k < 1 || k > kTop || gate[k] <= 0) L[k] = R[k] = 0;
         for (int k = 1; k <= kTop; k++) {
             double g = gate[k] * s;
-            if (g <= 0) continue;
+            if (g <= 0 && !(md && gate[k] > 0)) continue;
             cd l = L[k], r = R[k];
             double a = 0, b = 0;
             cd c = 0;
@@ -185,7 +201,10 @@ struct Sep {
                 c += plr[j];
             }
             double tr = a + b;
-            if (!(tr > 1e-24)) continue;
+            if (!(tr > 1e-24)) {
+                if (md == 2) L[k] = R[k] = 0;
+                continue;
+            }
             double d = std::sqrt((a - b) * (a - b) + 4 * std::norm(c));
             double l1 = 0.5 * (tr + d), l2 = 0.5 * (tr - d);
             cd vL, vR;
@@ -208,8 +227,13 @@ struct Sep {
             double tau = kItdMax * g * p2 * itdw[k];                // 偏左 → 右耳晚到（只在低頻）
             if (tau > 0) uR *= std::polar(1.0, -omega[k] * tau);
             else if (tau < 0) uL *= std::polar(1.0, omega[k] * tau);
-            L[k] = uL * sp + aL;
-            R[k] = uR * sp + aR;
+            if (md == 2) {
+                L[k] = sa * aL;
+                R[k] = sa * aR * decor[k];
+            } else {
+                L[k] = uL * sp + fa * aL;
+                R[k] = uR * sp + fa * aR;
+            }
         }
         for (int k = 0; k < K; k++) {  // 組回 L + iR 的頻譜 → 逆轉換的實部＝左、虛部＝右
             Y[k] = L[k] + cd(0, 1) * R[k];
@@ -286,7 +310,8 @@ static intptr_t dispatcher(AEffect* e, int32_t op, int32_t index, intptr_t value
         return 1;
     }
     case effGetChunk:
-        std::snprintf(s->chunk, sizeof s->chunk, "strength=%.3f", s->strength.load());
+        std::snprintf(s->chunk, sizeof s->chunk, "strength=%.3f;mode=%d;amb=%.3f", s->strength.load(), s->mode.load(),
+                      s->amb.load());
         *(void**)ptr = s->chunk;
         return (intptr_t)std::strlen(s->chunk);
     case effSetChunk: {
@@ -294,6 +319,8 @@ static intptr_t dispatcher(AEffect* e, int32_t op, int32_t index, intptr_t value
         std::memcpy(b, ptr, (size_t)std::min<intptr_t>(value, 63));
         const char* p = std::strstr(b, "strength=");
         if (p) s->strength.store((float)std::min(1.0, std::max(0.0, std::atof(p + 9))));
+        if ((p = std::strstr(b, "mode="))) s->mode.store(std::min(2, std::max(0, std::atoi(p + 5))));
+        if ((p = std::strstr(b, "amb="))) s->amb.store((float)std::min(1.0, std::max(0.0, std::atof(p + 4))));
         return 1;
     }
     case effCanBeAutomated:

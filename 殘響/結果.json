@@ -1,53 +1,52 @@
 {
  "device": "NVIDIA GeForce RTX 5070 Ti",
  "rays_per_source": 4194304,
- "version": 5,
  "studio": {
   "volume_m3": 106,
   "alpha_scale": [
-   17.653,
-   17.457,
-   7.718,
-   7.994,
-   3.165,
-   1.661,
-   1.419,
-   6.169,
-   2.226
+   16.928,
+   15.554,
+   7.094,
+   6.712,
+   3.234,
+   1.733,
+   1.427,
+   7.092,
+   2.477
   ],
   "head": "SADIE II KU100",
   "sources": [
    {
     "T30": [
      0.25,
-     0.24,
-     0.26,
+     0.23,
      0.25,
-     0.26,
-     0.26,
+     0.25,
      0.24,
-     0.14,
+     0.25,
+     0.22,
+     0.12,
      0.14
     ],
-    "EDT_mid": 0.2,
-    "C80_dB": 27.7,
+    "EDT_mid": 0.21,
+    "C80_dB": 28.6,
     "D50": 0.99,
     "LF": 0.14,
-    "IACC_E": 0.51,
-    "max_reflection_15ms_dB": -14.2,
-    "xo_wave_vs_ray_dB": 4.2,
-    "wave_first_ms_dB": -33.5,
-    "xo_ray_rev_dB": -3.4,
-    "xo_wave_rev_dB": 0.8,
+    "IACC_E": 0.56,
+    "max_reflection_15ms_dB": -15.7,
+    "xo_wave_vs_ray_dB": 5.4,
+    "wave_first_ms_dB": -33.4,
+    "xo_ray_rev_dB": -4.5,
+    "xo_wave_rev_dB": 0.9,
     "diffuse_theory_dB": 6.3,
     "ray_rev_by_band_dB": [
-     -4.2,
-     -1.2,
-     -3.7,
-     -4.5,
-     -4.9,
-     -2.2,
-     -2.5
+     -3.8,
+     0.0,
+     -4.3,
+     -5.5,
+     -5.6,
+     -3.6,
+     -3.3
     ],
     "theory_by_band_dB": [
      6.3,
@@ -59,7 +58,7 @@
      5.8
     ],
     "direct_check": 0.99,
-    "leaks": 838,
+    "leaks": 842,
     "paths": 218,
     "paths_by_order": [
      6,
@@ -72,35 +71,35 @@
    },
    {
     "T30": [
+     0.26,
+     0.26,
+     0.26,
+     0.28,
+     0.27,
      0.25,
      0.23,
-     0.24,
-     0.23,
-     0.23,
-     0.24,
-     0.22,
      0.14,
      0.14
     ],
-    "EDT_mid": 0.2,
-    "C80_dB": 28.2,
+    "EDT_mid": 0.21,
+    "C80_dB": 28.4,
     "D50": 0.99,
     "LF": 0.14,
-    "IACC_E": 0.46,
-    "max_reflection_15ms_dB": -14.2,
-    "xo_wave_vs_ray_dB": 4.1,
+    "IACC_E": 0.5,
+    "max_reflection_15ms_dB": -15.7,
+    "xo_wave_vs_ray_dB": 6.3,
     "wave_first_ms_dB": -32.6,
-    "xo_ray_rev_dB": -2.4,
-    "xo_wave_rev_dB": 1.7,
+    "xo_ray_rev_dB": -4.5,
+    "xo_wave_rev_dB": 1.8,
     "diffuse_theory_dB": 6.3,
     "ray_rev_by_band_dB": [
-     1.3,
-     -0.2,
-     -3.4,
-     -5.0,
-     -2.2,
-     -1.7,
-     -3.0
+     1.8,
+     -0.3,
+     -3.5,
+     -4.2,
+     -4.4,
+     -3.2,
+     -3.5
     ],
     "theory_by_band_dB": [
      6.3,
@@ -112,7 +111,7 @@
      5.8
     ],
     "direct_check": 1.0,
-    "leaks": 839,
+    "leaks": 817,
     "paths": 218,
     "paths_by_order": [
      6,
@@ -130,12 +129,12 @@
     "grid_m": 0.0679,
     "cells_M": 0.4,
     "fs": 8750,
-    "k_lf": 0.411,
+    "k_lf": 0.422,
     "T_lf_iter": [
      [
-      0.3,
       0.31,
-      0.27
+      0.31,
+      0.28
      ],
      [
       0.25,
@@ -143,36 +142,36 @@
       0.24
      ]
     ],
-    "seconds": 2.6
+    "seconds": 3.6
    },
    {
     "top_Hz": 841,
     "grid_m": 0.034,
     "cells_M": 2.8,
     "fs": 17475,
-    "k_lf": 0.368,
+    "k_lf": 0.381,
     "T_lf_iter": [
      [
-      0.15
+      0.16
      ],
      [
       0.16
      ],
      [
-      0.24
+      0.23
      ],
      [
       0.25
      ]
     ],
-    "seconds": 7.5
+    "seconds": 15.5
    },
    {
     "top_Hz": 1682,
     "grid_m": 0.017,
     "cells_M": 21.2,
     "fs": 34950,
-    "k_lf": 0.658,
+    "k_lf": 0.651,
     "T_lf_iter": [
      [
       0.17
@@ -184,7 +183,7 @@
       0.25
      ]
     ],
-    "seconds": 189.8
+    "seconds": 351.9
    }
   ],
   "target": [
@@ -198,8 +197,346 @@
    0.14,
    0.14
   ],
-  "seconds": 344.4,
+  "seconds": 662.3,
   "length_s": 0.3,
+  "rays_per_source": 33554432
+ },
+ "club": {
+  "volume_m3": 2987,
+  "alpha_scale": [
+   26.758,
+   25.544,
+   14.684,
+   8.674,
+   3.562,
+   2.296,
+   2.932,
+   5.762,
+   0.61
+  ],
+  "head": "SADIE II KU100",
+  "sources": [
+   {
+    "T30": [
+     0.67,
+     0.71,
+     0.71,
+     0.79,
+     0.8,
+     0.8,
+     0.64,
+     0.38,
+     0.38
+    ],
+    "EDT_mid": 0.6,
+    "C80_dB": 8.7,
+    "D50": 0.72,
+    "LF": 0.13,
+    "IACC_E": 0.46,
+    "max_reflection_15ms_dB": -8.1,
+    "xo_wave_vs_ray_dB": -1.6,
+    "wave_first_ms_dB": -21.8,
+    "xo_ray_rev_dB": 1.3,
+    "xo_wave_rev_dB": -0.2,
+    "diffuse_theory_dB": 10.9,
+    "ray_rev_by_band_dB": [
+     -3.7,
+     -3.2,
+     -1.3,
+     -0.7,
+     3.0,
+     4.3,
+     3.9
+    ],
+    "theory_by_band_dB": [
+     10.9,
+     10.9,
+     10.9,
+     11.3,
+     11.3,
+     11.3,
+     10.3
+    ],
+    "direct_check": 1.0,
+    "leaks": 317,
+    "paths": 76,
+    "paths_by_order": [
+     4,
+     12,
+     24,
+     36
+    ],
+    "first_ms": 8.8
+   },
+   {
+    "T30": [
+     0.67,
+     0.68,
+     0.71,
+     0.8,
+     0.8,
+     0.83,
+     0.63,
+     0.39,
+     0.38
+    ],
+    "EDT_mid": 0.6,
+    "C80_dB": 8.7,
+    "D50": 0.72,
+    "LF": 0.13,
+    "IACC_E": 0.41,
+    "max_reflection_15ms_dB": -8.1,
+    "xo_wave_vs_ray_dB": -0.7,
+    "wave_first_ms_dB": -28.9,
+    "xo_ray_rev_dB": 0.7,
+    "xo_wave_rev_dB": 0.0,
+    "diffuse_theory_dB": 10.9,
+    "ray_rev_by_band_dB": [
+     -3.3,
+     -2.5,
+     -1.4,
+     -0.7,
+     3.0,
+     4.2,
+     3.9
+    ],
+    "theory_by_band_dB": [
+     10.9,
+     10.9,
+     10.9,
+     11.3,
+     11.3,
+     11.3,
+     10.3
+    ],
+    "direct_check": 0.98,
+    "leaks": 323,
+    "paths": 76,
+    "paths_by_order": [
+     4,
+     12,
+     24,
+     36
+    ],
+    "first_ms": 8.8
+   }
+  ],
+  "fdtd": [
+   {
+    "top_Hz": 421,
+    "grid_m": 0.0679,
+    "cells_M": 9.4,
+    "fs": 8750,
+    "k_lf": 0.292,
+    "T_lf_iter": [
+     [
+      0.56,
+      0.59,
+      0.66
+     ],
+     [
+      0.73,
+      0.72,
+      0.73
+     ]
+    ],
+    "seconds": 47.4
+   },
+   {
+    "top_Hz": 841,
+    "grid_m": 0.034,
+    "cells_M": 71.4,
+    "fs": 17475,
+    "k_lf": 2.081,
+    "T_lf_iter": [
+     [
+      1.24
+     ],
+     [
+      1.07
+     ],
+     [
+      0.81
+     ]
+    ],
+    "seconds": 812.7
+   }
+  ],
+  "target": [
+   0.72,
+   0.72,
+   0.72,
+   0.8,
+   0.8,
+   0.8,
+   0.64,
+   0.38,
+   0.38
+  ],
+  "seconds": 1023.2,
+  "length_s": 0.91,
+  "rays_per_source": 33554432
+ },
+ "opera": {
+  "volume_m3": 26929,
+  "alpha_scale": [
+   2.233,
+   1.623,
+   1.277,
+   1.107,
+   0.988,
+   0.922,
+   0.96,
+   1.044,
+   0.02
+  ],
+  "head": "SADIE II KU100",
+  "sources": [
+   {
+    "T30": [
+     1.49,
+     1.45,
+     1.41,
+     1.29,
+     1.28,
+     1.3,
+     1.05,
+     0.64,
+     0.45
+    ],
+    "EDT_mid": 0.75,
+    "C80_dB": 4.7,
+    "D50": 0.59,
+    "LF": 0.2,
+    "IACC_E": 0.45,
+    "max_reflection_15ms_dB": null,
+    "xo_wave_vs_ray_dB": 1.2,
+    "wave_first_ms_dB": -41.9,
+    "xo_ray_rev_dB": 4.6,
+    "xo_wave_rev_dB": 5.7,
+    "diffuse_theory_dB": 9.5,
+    "ray_rev_by_band_dB": [
+     6.3,
+     8.1,
+     4.6,
+     3.5,
+     4.5,
+     5.3,
+     4.0
+    ],
+    "theory_by_band_dB": [
+     9.5,
+     9.5,
+     9.5,
+     9.1,
+     9.1,
+     9.1,
+     8.1
+    ],
+    "direct_check": 1.02,
+    "leaks": 249,
+    "paths": 36,
+    "paths_by_order": [
+     7,
+     12,
+     17
+    ],
+    "first_ms": 17.5
+   },
+   {
+    "T30": [
+     1.46,
+     1.45,
+     1.46,
+     1.32,
+     1.29,
+     1.29,
+     1.04,
+     0.63,
+     0.45
+    ],
+    "EDT_mid": 0.76,
+    "C80_dB": 4.7,
+    "D50": 0.59,
+    "LF": 0.2,
+    "IACC_E": 0.36,
+    "max_reflection_15ms_dB": null,
+    "xo_wave_vs_ray_dB": 2.0,
+    "wave_first_ms_dB": -41.8,
+    "xo_ray_rev_dB": 3.7,
+    "xo_wave_rev_dB": 5.8,
+    "diffuse_theory_dB": 9.5,
+    "ray_rev_by_band_dB": [
+     5.3,
+     6.2,
+     4.3,
+     3.7,
+     4.9,
+     4.9,
+     4.1
+    ],
+    "theory_by_band_dB": [
+     9.5,
+     9.5,
+     9.5,
+     9.1,
+     9.1,
+     9.1,
+     8.1
+    ],
+    "direct_check": 0.99,
+    "leaks": 278,
+    "paths": 36,
+    "paths_by_order": [
+     7,
+     12,
+     17
+    ],
+    "first_ms": 17.5
+   }
+  ],
+  "fdtd": {
+   "grid_m": 0.0733,
+   "cells_M": 111.0,
+   "fs": 8106,
+   "k_lf": 0.651,
+   "T_lf_iter": [
+    [
+     2.08,
+     2.03,
+     1.97
+    ],
+    [
+     1.73,
+     1.77,
+     1.69
+    ],
+    [
+     1.67,
+     1.52,
+     1.47
+    ],
+    [
+     1.6,
+     1.41,
+     1.37
+    ]
+   ],
+   "seconds": 1482.0
+  },
+  "target": [
+   1.43,
+   1.43,
+   1.43,
+   1.3,
+   1.3,
+   1.3,
+   1.04,
+   0.62,
+   0.62
+  ],
+  "seconds": 2022.9,
+  "length_s": 1.6,
   "rays_per_source": 33554432
  },
  "hall_front": {
@@ -543,6 +880,211 @@
   ],
   "seconds": 1389.0,
   "length_s": 2.67,
+  "rays_per_source": 33554432
+ },
+ "version": 5,
+ "studio_sur": {
+  "volume_m3": 106,
+  "alpha_scale": [
+   32.003,
+   35.082,
+   15.374,
+   13.376,
+   7.591,
+   3.704,
+   2.354,
+   7.644,
+   4.097
+  ],
+  "head": "SADIE II KU100",
+  "sources": [
+   {
+    "T30": [
+     0.24,
+     0.22,
+     0.23,
+     0.23,
+     0.24,
+     0.25,
+     0.23,
+     0.14,
+     0.14
+    ],
+    "EDT_mid": 0.17,
+    "C80_dB": 30.4,
+    "D50": 0.99,
+    "LF": 0.11,
+    "IACC_E": 0.51,
+    "max_reflection_15ms_dB": -13.5,
+    "xo_wave_vs_ray_dB": 2.3,
+    "wave_first_ms_dB": -33.0,
+    "xo_ray_rev_dB": -4.9,
+    "xo_wave_rev_dB": -2.6,
+    "diffuse_theory_dB": 4.7,
+    "ray_rev_by_band_dB": [
+     -3.3,
+     0.9,
+     -1.9,
+     -3.9,
+     -6.2,
+     -5.9,
+     -5.3
+    ],
+    "theory_by_band_dB": [
+     4.7,
+     4.7,
+     4.7,
+     4.7,
+     4.7,
+     4.7,
+     4.3
+    ],
+    "direct_check": 0.99,
+    "leaks": 662,
+    "paths": 213,
+    "paths_by_order": [
+     6,
+     16,
+     38,
+     55,
+     98
+    ],
+    "first_ms": 3.3
+   },
+   {
+    "T30": [
+     0.24,
+     0.23,
+     0.24,
+     0.24,
+     0.25,
+     0.25,
+     0.22,
+     0.14,
+     0.14
+    ],
+    "EDT_mid": 0.17,
+    "C80_dB": 30.1,
+    "D50": 0.99,
+    "LF": 0.11,
+    "IACC_E": 0.52,
+    "max_reflection_15ms_dB": -13.5,
+    "xo_wave_vs_ray_dB": 3.0,
+    "wave_first_ms_dB": -35.4,
+    "xo_ray_rev_dB": -5.4,
+    "xo_wave_rev_dB": -2.4,
+    "diffuse_theory_dB": 4.7,
+    "ray_rev_by_band_dB": [
+     -0.7,
+     -1.4,
+     -2.3,
+     -2.7,
+     -5.6,
+     -5.9,
+     -5.2
+    ],
+    "theory_by_band_dB": [
+     4.7,
+     4.7,
+     4.7,
+     4.7,
+     4.7,
+     4.7,
+     4.3
+    ],
+    "direct_check": 1.01,
+    "leaks": 713,
+    "paths": 213,
+    "paths_by_order": [
+     6,
+     16,
+     38,
+     55,
+     98
+    ],
+    "first_ms": 3.3
+   }
+  ],
+  "fdtd": [
+   {
+    "top_Hz": 421,
+    "grid_m": 0.0679,
+    "cells_M": 0.4,
+    "fs": 8750,
+    "k_lf": 0.35,
+    "T_lf_iter": [
+     [
+      0.26,
+      0.27,
+      0.22
+     ]
+    ],
+    "seconds": 2.9
+   },
+   {
+    "top_Hz": 841,
+    "grid_m": 0.034,
+    "cells_M": 2.8,
+    "fs": 17475,
+    "k_lf": 0.696,
+    "T_lf_iter": [
+     [
+      0.2
+     ],
+     [
+      0.23
+     ],
+     [
+      0.24
+     ],
+     [
+      0.24
+     ]
+    ],
+    "seconds": 12.5
+   },
+   {
+    "top_Hz": 1682,
+    "grid_m": 0.017,
+    "cells_M": 21.2,
+    "fs": 34950,
+    "k_lf": 1.469,
+    "T_lf_iter": [
+     [
+      0.32
+     ],
+     [
+      0.29
+     ],
+     [
+      0.26
+     ],
+     [
+      0.24
+     ],
+     [
+      0.26
+     ],
+     [
+      0.24
+     ]
+    ],
+    "seconds": 561.2
+   }
+  ],
+  "target": [
+   0.25,
+   0.25,
+   0.25,
+   0.25,
+   0.25,
+   0.25,
+   0.22,
+   0.14,
+   0.14
+  ],
+  "seconds": 766.7,
+  "length_s": 0.3,
   "rays_per_source": 33554432
  }
 }
