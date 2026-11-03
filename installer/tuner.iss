@@ -65,6 +65,7 @@ Source: "{#Root}\殘響\頭部\v4.npz"; DestDir: "{app}\殘響\頭部"; Flags: i
 Source: "{#Root}\殘響\頭部\前方.npz"; DestDir: "{app}\殘響\頭部"; Flags: ignoreversion
 Source: "{#Root}\殘響\頭部\分組.json"; DestDir: "{app}\殘響\頭部"; Flags: ignoreversion
 Source: "{#Root}\分離度引擎\sep_v1.dll"; DestDir: "{app}\分離度引擎"; Flags: ignoreversion
+Source: "{#Root}\tools\殘響模擬.py"; DestDir: "{app}\tools"; Flags: ignoreversion
 Source: "bootstrap.cmd"; DestDir: "{app}"; Flags: ignoreversion
 Source: "uv\uv.exe"; DestDir: "{app}\bin"; Flags: ignoreversion
 
@@ -83,6 +84,8 @@ Type: filesandordirs; Name: "{app}\.venv"
 Type: filesandordirs; Name: "{app}\python"
 Type: filesandordirs; Name: "{app}\bin"
 Type: filesandordirs; Name: "{app}\__pycache__"
+Type: filesandordirs; Name: "{app}\tools\__pycache__"
+Type: filesandordirs; Name: "{app}\殘響"
 Type: files; Name: "{app}\install-log.txt"
 
 [Code]

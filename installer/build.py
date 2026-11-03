@@ -23,6 +23,7 @@ ZIP_FILES = ("耳機調音台.pyw", "安裝.bat", "說明.txt", "README.md", "LI
              "殘響/studio.npy", "殘響/hall_front.npy", "殘響/hall_mid.npy",
              "殘響/studio_spk.npy", "殘響/studio_sur_spk.npy", "殘響/hrtf30.npy", "殘響/v4.npz",
              "殘響/small_spk.npy", "殘響/small_spk_dir.npy",
+             "tools/殘響模擬.py",
              "分離度引擎/sep_v1.dll")  # 殘響：tools/殘響模擬.py 模擬好的房間；v4.npz：tools/直接擺位資料.py
 
 

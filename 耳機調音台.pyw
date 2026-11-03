@@ -2270,6 +2270,138 @@ def head_name(hid):
     return "KU100 假人頭" if hid == "KU100" else f"真人 {hid}"
 
 
+# 房間模擬（補算）：錄音室、虛擬喇叭、環繞、小房間每個頭型都附好了；音樂廳只附假人頭的。想要別的頭型也有，
+# 就在這台電腦上跑 tools/殘響模擬.py --head <代號> <房間…>（沒有那個人的完整頭部量測會先從 SADIE II 下載，約 10 MB）。
+# 要另外裝計算套件（PyTorch、h5py）：只有補算才需要，使用者自己決定裝不裝；有 NVIDIA 顯示卡裝 GPU 版（下載約 3 GB），
+# 沒有裝處理器版（約 200 MB，算得慢，模擬程式會自動少追一點聲線）。裝在調音台自己的 Python 裡，隨時可以移除
+SIM_SCRIPT = os.path.join(APP_DIR, "tools", "殘響模擬.py")
+SIM_PROGRESS = os.path.join(REVERB_DIR, "進度.json")
+SIM_LOG = os.path.join(REVERB_DIR, "重算紀錄.txt")
+SIM_INSTALL_LOG = os.path.join(REVERB_DIR, "安裝紀錄.txt")
+SIM_ROOMS = [("studio", "錄音室"), ("studio_spk", "虛擬喇叭"), ("studio_sur_spk", "環繞喇叭"), ("small_spk", "小房間"),
+             ("hall_front", "音樂廳前排"), ("hall_mid", "音樂廳中段")]
+# 檔案 → 模擬程式的房間（虛擬喇叭跟錄音室一起算；小房間的場景沒有附在模擬程式裡，只能用附好的）
+SIM_SCENE = {"studio": "studio", "studio_spk": "studio", "studio_sur_spk": "studio_sur",
+             "hall_front": "hall_front", "hall_mid": "hall_mid"}
+SIM_NAMES = {"studio": "錄音室（含虛擬喇叭）", "studio_sur": "環繞喇叭", "hall_front": "音樂廳前排", "hall_mid": "音樂廳中段"}
+SIM_SECONDS = {"studio": 400, "studio_sur": 400, "hall_front": 1900, "hall_mid": 1400}  # 中高階顯示卡大約幾秒
+TORCH_INDEX = "https://download.pytorch.org/whl/"
+_GPU, _K32 = [], []
+
+
+def sim_python():
+    """跑計算、裝套件用的 python.exe（調音台本身用 pythonw.exe：沒有黑視窗、也沒有輸出）"""
+    py = os.path.join(os.path.dirname(sys.executable), "python.exe")
+    return py if os.path.exists(py) else sys.executable
+
+
+def sim_uv():
+    """安裝程式版附的 uv（調音台自己的 Python 在安裝資料夾裡）；自己裝 Python 的沒有 → None"""
+    uv = os.path.join(APP_DIR, "bin", "uv.exe")
+    return uv if os.path.exists(uv) else None
+
+
+def sim_ready():
+    """補算要的計算套件（PyTorch、h5py）裝了沒"""
+    import importlib
+    import importlib.util
+    importlib.invalidate_caches()  # 剛裝好的也看得到
+    try:
+        return all(importlib.util.find_spec(m) is not None for m in ("torch", "h5py"))
+    except (ImportError, ValueError):
+        return False
+
+
+def has_nvidia():
+    """有沒有 NVIDIA 顯示卡（GPU 版的 PyTorch 才用得上）；問一次記著"""
+    if not _GPU:
+        try:
+            r = subprocess.run(["nvidia-smi", "-L"], capture_output=True, timeout=15,
+                               creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+            _GPU.append(r.returncode == 0 and b"GPU" in r.stdout)
+        except (OSError, subprocess.SubprocessError):
+            _GPU.append(False)
+    return _GPU[0]
+
+
+def sim_install_cmds(gpu):
+    """安裝計算套件的指令：h5py 從 PyPI；PyTorch 從官方的套件庫（GPU 版 CUDA 12.8／處理器版）"""
+    idx = TORCH_INDEX + ("cu128" if gpu else "cpu")
+    uv = sim_uv()
+    base = ([uv, "pip", "install", "--python", sim_python()] if uv else
+            [sim_python(), "-m", "pip", "install", "--disable-pip-version-check", "--no-cache-dir"])
+    return [base + ["h5py"], base + ["torch", "--index-url", idx]]
+
+
+def sim_remove_cmds():
+    uv = sim_uv()
+    return [[uv, "pip", "uninstall", "--python", sim_python(), "torch", "h5py"] if uv else
+            [sim_python(), "-m", "pip", "uninstall", "-y", "torch", "h5py"]]
+
+
+def _kernel32():
+    if not _K32:
+        k, W = ctypes.WinDLL("kernel32"), ctypes.wintypes
+        k.OpenProcess.restype, k.OpenProcess.argtypes = ctypes.c_void_p, [W.DWORD, W.BOOL, W.DWORD]
+        k.GetExitCodeProcess.argtypes = [ctypes.c_void_p, ctypes.POINTER(W.DWORD)]
+        k.QueryFullProcessImageNameW.argtypes = [ctypes.c_void_p, W.DWORD, W.LPWSTR, ctypes.POINTER(W.DWORD)]
+        k.TerminateProcess.argtypes = [ctypes.c_void_p, W.UINT]
+        k.CloseHandle.argtypes = [ctypes.c_void_p]
+        _K32.append(k)
+    return _K32[0]
+
+
+def pid_alive(pid):
+    """這個程式還在跑嗎（而且是 Python：結束後程式編號可能被別的程式拿去用）"""
+    k = _kernel32()
+    h = k.OpenProcess(0x1000, False, int(pid))  # PROCESS_QUERY_LIMITED_INFORMATION
+    if not h:
+        return False
+    try:
+        code, n = ctypes.wintypes.DWORD(), ctypes.wintypes.DWORD(1024)
+        buf = ctypes.create_unicode_buffer(1024)
+        return bool(k.GetExitCodeProcess(h, ctypes.byref(code)) and code.value == 259  # STILL_ACTIVE
+                    and k.QueryFullProcessImageNameW(h, 0, buf, ctypes.byref(n))
+                    and "python" in os.path.basename(buf.value).lower())
+    finally:
+        k.CloseHandle(h)
+
+
+def pid_kill(pid):
+    k = _kernel32()
+    h = k.OpenProcess(0x0001, False, int(pid))  # PROCESS_TERMINATE
+    if h:
+        k.TerminateProcess(h, 1)
+        k.CloseHandle(h)
+
+
+def sim_status():
+    """模擬程式寫的進度（殘響/進度.json）＋還在不在跑 → dict 或 None"""
+    try:
+        with open(SIM_PROGRESS, encoding="utf-8") as fh:
+            st = json.load(fh)
+    except (OSError, ValueError):
+        return None
+    st["alive"] = not st.get("finished") and bool(st.get("pid")) and pid_alive(st["pid"])
+    return st
+
+
+def sim_todo(hid):
+    """這個頭型還沒有、而且算得出來的房間 → [模擬程式的房間名]"""
+    d = REVERB_DIR if hid == "KU100" else os.path.join(HEADS_DIR, hid)
+    return list(dict.fromkeys(s for f, s in SIM_SCENE.items() if not os.path.exists(os.path.join(d, f + ".npy"))))
+
+
+def last_line(path):
+    """紀錄檔最後一行（出錯時給使用者看原因）"""
+    try:
+        with open(path, encoding="utf-8", errors="replace") as fh:
+            lines = [ln.strip() for ln in fh if ln.strip()]
+        return lines[-1][:160] if lines else ""
+    except OSError:
+        return ""
+
+
 def head_groups_saved():
     """依前方的頻率響應＋兩耳時間差分好的組（殘響/頭部/分組.json，每組第一個是代表）；沒有就每個頭自己一組"""
     ids = head_sets()
@@ -2846,6 +2978,9 @@ class App:
         self._test = None  # 個人化測驗中暫時用的設定
         self._hf = self._pref = self._hf_win = self._head = self._lr = None
         self._head_pop, self._head_pop_t = None, 0.0
+        self._sim_win = self._sim_job = self._sim_inst = self._sim_proc = None  # 房間模擬視窗、裝套件、計算中的程式
+        self._sim_was = False
+        root.after(5000, self.sim_watch)  # 上次關掉調音台時還在補算：算完一樣會換上
         HEAD_USE[0] = s.get("head") if s.get("head") in head_sets() else "KU100"
         self._selftest, self._st_busy, self.st_probs = None, False, []
         self.enabled = tk.BooleanVar(value=last.get("enabled", True))
@@ -4328,7 +4463,7 @@ class App:
         body = self.pers_page("個人化", "這幾項只跟你有關：你的耳朵、你的喜好、你的頭型。結果套用到所有風格，可以各自開關。",
                               [("關閉", self.hf_end, False)])
 
-        def section(title, desc, result, var, start, start_label):
+        def section(title, desc, result, var, start, start_label, more=()):
             box = tk.Frame(body, bg=PANEL, highlightthickness=1, highlightbackground=LINE)
             box.pack(fill="x", pady=(0, px(8)))
             inner = tk.Frame(box, bg=PANEL)
@@ -4355,6 +4490,8 @@ class App:
                 p.command = flip
                 paint()
                 p.pack(side="left", padx=(0, px(6)))
+            for lb, cmd in more:
+                Pill(right, self, lb, cmd, size=9).pack(side="left", padx=(0, px(6)))
             Pill(right, self, start_label, start, primary=True, size=9).pack(side="left")
 
         hf = self.hf_data
@@ -4378,7 +4515,10 @@ class App:
                 self.pref_on if pf else None, self.pref_intro, "重新測驗" if pf else "開始測驗")
         section("頭型（你的頭）", "虛擬喇叭、錄音室殘響、交叉饋送用的頭。從假人頭和 18 位真人裡，只聽前方、一次比兩個，"
                 "挑聲音最像在前面的一位。不用播歌，約 5 分鐘。也可以直接點「交叉饋送」底下的「頭型 ▾」換。",
-                f"目前：{head_name(current_head())}", None, self.head_intro, "挑選")
+                f"目前：{head_name(current_head())}" + (
+                    "（補算中）" if (sim_status() or {}).get("alive") else
+                    "（音樂廳用假人頭的，可以在「房間模擬」補算）" if current_head() != "KU100" and sim_todo(current_head())
+                    else ""), None, self.head_intro, "挑選", more=[("房間模擬", self.sim_window)])
         self.center_on_root(self._hf_win)
 
     # 頭型：「交叉饋送」底下的小字點一下跳出清單直接挑
@@ -4568,6 +4708,280 @@ class App:
         if self._spk_pop:
             self._spk_pop.destroy()
             self._spk_pop, self._spk_pop_t = None, time.time()
+
+    # ---------- 房間模擬（補算）：現在這個頭型缺的房間在這台電腦上算；計算套件要不要裝由使用者決定 ----------
+    @staticmethod
+    def fmt_min(sec):
+        sec = max(0, int(sec))
+        return f"{sec // 3600} 小時 {sec % 3600 // 60} 分" if sec >= 3600 else f"{sec // 60} 分 {sec % 60:02d} 秒"
+
+    def sim_window(self):
+        if self._sim_win:
+            self._sim_win.lift()
+            return
+        px = self.px
+        win = self._sim_win = tk.Toplevel(self.root, bg=PANEL)
+        win.title("房間模擬")
+        win.transient(self.root)
+        win.resizable(False, False)
+
+        def close():
+            if self._sim_job:
+                self.root.after_cancel(self._sim_job)
+            self._sim_win = self._sim_job = None
+            win.destroy()
+        win.protocol("WM_DELETE_WINDOW", close)
+        body = tk.Frame(win, bg=PANEL)
+        body.pack(fill="both", expand=True, padx=px(20), pady=px(16))
+        self.label(body, "房間模擬（補算）", 12, bold=True).pack(anchor="w")
+        self.label(body, "殘響和虛擬喇叭是在真實形狀的房間裡做聲學模擬算出來的，每個頭型各一組。錄音室、虛擬喇叭、環繞、"
+                   "小房間都已經附好；音樂廳只附了假人頭的，選真人頭型時音樂廳先用假人頭那組。"
+                   "想讓音樂廳也用你的頭型，可以在這台電腦上補算。", 9, SUB, justify="left",
+                   wraplength=px(560)).pack(anchor="w", pady=(px(4), px(10)))
+
+        def box():
+            b = tk.Frame(body, bg=PANEL, highlightthickness=1, highlightbackground=LINE)
+            b.pack(fill="x", pady=(0, px(8)))
+            inner = tk.Frame(b, bg=PANEL)
+            inner.pack(fill="x", padx=px(12), pady=px(8))
+            top = tk.Frame(inner, bg=PANEL)
+            top.pack(fill="x")
+            btns = tk.Frame(top, bg=PANEL)
+            btns.pack(side="right")
+            txt = self.label(top, "", 10, bold=True)
+            txt.pack(side="left")
+            return inner, btns, txt
+        inner, self._sim_pkg_btns, self._sim_pkg = box()
+        self._sim_pkg_sub = self.label(inner, "", 8, SUB, justify="left", wraplength=px(560))
+        self._sim_pkg_sub.pack(anchor="w", pady=(px(2), 0))
+        inner, self._sim_btns, self._sim_txt = box()
+        grid = tk.Frame(inner, bg=PANEL)
+        grid.pack(anchor="w", pady=(px(6), 0))
+        self._sim_cells = {}
+        for j, (k, n) in enumerate(SIM_ROOMS):
+            self.label(grid, n, 8, SUB).grid(row=0, column=j, padx=(0, px(14)), sticky="w")
+            self._sim_cells[k] = self.label(grid, "", 9)
+            self._sim_cells[k].grid(row=1, column=j, padx=(0, px(14)), sticky="w")
+        self._sim_bar = tk.Canvas(inner, height=px(8), bg=PANEL, highlightthickness=0)
+        self._sim_bar.pack(fill="x", pady=(px(8), 0))
+        self._sim_sub = self.label(inner, "", 8, SUB, justify="left", wraplength=px(560))
+        self._sim_sub.pack(anchor="w", pady=(px(2), 0))
+        row = tk.Frame(body, bg=PANEL)
+        row.pack(fill="x", pady=(px(4), 0))
+        self.label(row, "頭部量測：SADIE II 資料庫（University of York，Apache 2.0）", 8, SUB).pack(side="left")
+        Pill(row, self, "關閉", close).pack(side="right")
+        self._sim_keys = (None, None)
+        self.sim_refresh()
+        self.center_on_root(win)
+
+    def sim_running(self):
+        """(進度, 在不在算)：剛按補算、模擬程式還沒寫進度時也算在算"""
+        st = sim_status()
+        return st, bool((st and st["alive"]) or (self._sim_proc and self._sim_proc.poll() is None))
+
+    def sim_refresh(self):
+        if not self._sim_win:
+            return
+        px, hid, inst = self.px, current_head(), self._sim_inst
+        st, running = self.sim_running()
+        busy = inst is not None and not inst["done"]
+        ready = sim_ready()
+        gpu = has_nvidia()
+        # 計算套件
+        if busy:
+            what = "移除" if inst["remove"] else "安裝"
+            pkg = f"計算套件{what}中…（已經 {self.fmt_min(time.time() - inst['started'])}）"
+            sub = ("PyTorch 下載約 3 GB（顯示卡版），看網路速度要幾分鐘到半小時。" if inst["gpu"] else
+                   "PyTorch 下載約 200 MB（處理器版）。") * (not inst["remove"]) + "可以先關掉這個視窗，好了會通知你。"
+            btns = ()
+        elif ready:
+            pkg = "計算套件：已安裝（PyTorch、h5py）"
+            sub = ("有 NVIDIA 顯示卡：用顯示卡算。" if gpu else "沒有偵測到 NVIDIA 顯示卡：用處理器算，會很慢。") + \
+                "不再補算的話可以移除，空出幾 GB。"
+            btns = () if running else (("移除", self.sim_remove, False),)
+        else:
+            pkg = "計算套件：還沒安裝（只有補算才需要）"
+            sub = ("PyTorch＋h5py，" + ("裝在調音台自己的資料夾裡、不影響電腦裡其他程式；" if sim_uv() else "裝在你的 Python 裡；")
+                   + ("偵測到 NVIDIA 顯示卡，下載約 3 GB。" if gpu else "沒有偵測到 NVIDIA 顯示卡，下載約 200 MB（用處理器算會很慢）。")
+                   + "不補算就不用裝。")
+            if inst and inst["done"] and not inst["ok"]:
+                sub = f"上次{'移除' if inst['remove'] else '安裝'}失敗：{inst['msg']}（詳細紀錄：殘響\\安裝紀錄.txt）\n" + sub
+            btns = (("安裝…", self.sim_install, True),)
+        self._sim_pkg.config(text=pkg)
+        self._sim_pkg_sub.config(text=sub)
+        # 現在這個頭型
+        todo = sim_todo(hid)
+        self._sim_txt.config(text=f"現在的頭型：{head_name(hid)}")
+        own = REVERB_DIR if hid == "KU100" else os.path.join(HEADS_DIR, hid)
+        heads = (st or {}).get("head", "").split(",") if running else []
+        frac = 0.0
+        for k, _n in SIM_ROOMS:
+            scene = SIM_SCENE.get(k)
+            if hid in heads and st.get("current") == scene:
+                el = time.time() - st.get("room_started", time.time())
+                txt, col = f"計算中 {min(97, el / SIM_SECONDS.get(scene, 900) * (1 if gpu else 1 / 6) * 100):.0f}%", ACCENT
+            elif hid in heads and scene in st.get("rooms", []) and scene not in st.get("done", []):
+                txt, col = "排隊中", SUB
+            elif os.path.exists(os.path.join(own, k + ".npy")):
+                txt, col = "✓", GREEN
+            else:
+                txt, col = "用假人頭的", SUB
+            self._sim_cells[k].config(text=txt, fg=col)
+        if running and st:
+            rooms, done, cur = st.get("rooms", []), st.get("done", []), st.get("current")
+            speed = 1 if gpu else 6  # 處理器版大約慢這麼多（聲線已經少追了）
+            total = sum(SIM_SECONDS.get(r, 900) * speed for r in rooms) or 1
+            el = time.time() - st.get("room_started", time.time()) if cur else 0
+            spent = sum(SIM_SECONDS.get(r, 900) * speed for r in done) + (
+                min(el, SIM_SECONDS.get(cur, 900) * speed * 0.97) if cur else 0)
+            frac = spent / total
+            sub = (f"補算中：{head_name(st.get('head', hid))}　{st.get('stage') or '準備中'}　·　"
+                   f"已經 {self.fmt_min(time.time() - st.get('started', time.time()))}　·　全部大約還要 "
+                   f"{self.fmt_min(total - spent)}（顯示卡會滿載，照常聽歌沒問題）")
+        elif running:
+            sub = "補算準備中…"
+        elif st and not st.get("finished"):
+            err = last_line(SIM_LOG)
+            sub = (f"上一次補算沒有算完（{err}）。" if err else "上一次補算被中斷了。") + \
+                "算好的房間都有存起來，可以再按「補算」接著算。"
+        elif hid == "KU100":
+            sub = "假人頭的房間都附好了。換成真人頭型（「交叉饋送」底下的「頭型 ▾」）再來這裡補算。"
+        elif todo:
+            secs = sum(SIM_SECONDS.get(s, 900) for s in todo) * (1 if gpu else 6)
+            sub = (f"按「補算」把「{'、'.join(SIM_NAMES[s] for s in todo)}」用這個頭型算起來，"
+                   f"大約 {self.fmt_min(secs)}" + ("" if gpu else "（用處理器算）") + "。算好就自動換上。")
+        else:
+            sub = "這個頭型的房間都有了。"
+        self._sim_sub.config(text=sub)
+        bar, w = self._sim_bar, max(10, self._sim_bar.winfo_width())
+        bar.delete("all")
+        if running:
+            bar.create_rectangle(0, 0, w, px(8), fill=LINE, outline="")
+            bar.create_rectangle(0, 0, w * frac, px(8), fill=ACCENT, outline="")
+        mine = ((("停止計算", self.sim_stop, False),) if running else
+                (("補算", self.sim_fill, True),) if hid != "KU100" and todo and not busy else ())
+        for frame, items, key in ((self._sim_pkg_btns, btns, 0), (self._sim_btns, mine, 1)):
+            names = tuple(lb for lb, _c, _p in items)
+            if self._sim_keys[key] != names:  # 按鈕變了才重做（每秒重做會閃）
+                for w_ in frame.winfo_children():
+                    w_.destroy()
+                for lb, cmd, primary in items:
+                    Pill(frame, self, lb, cmd, primary=primary, size=9).pack(side="left", padx=(px(6), 0))
+                self._sim_keys = (names, self._sim_keys[1]) if key == 0 else (self._sim_keys[0], names)
+        self._sim_job = self.root.after(1000, self.sim_refresh)
+
+    def sim_watch(self):
+        """背景：補算做完 → 重寫設定換上新的房間；裝套件做完 → 通知（視窗關著也照樣看）"""
+        inst = self._sim_inst
+        if inst and inst["done"] and not inst.get("told"):
+            inst["told"] = True
+            if inst["ok"] and not inst["remove"]:
+                self.toast("計算套件裝好了", 2500)
+                if inst.get("then"):
+                    inst["then"]()
+            elif inst["ok"]:
+                self.toast("計算套件移除了", 2500)
+            else:
+                messagebox.showerror("計算套件", f"{'移除' if inst['remove'] else '安裝'}失敗：{inst['msg']}\n\n"
+                                     f"詳細紀錄在 {SIM_INSTALL_LOG}", parent=self._sim_win or self.root)
+        _st, running = self.sim_running()
+        if self._sim_was and not running:
+            self.changed()  # 新算好的房間：檔名的版本跟著換，Equalizer APO 會讀新的
+            err = "" if (_st or {}).get("finished") else last_line(SIM_LOG)
+            self.toast("房間模擬算好了" if not err else "補算停下來了", 2500)
+        self._sim_was = running
+        if running or (inst and not inst.get("told")):
+            self.root.after(3000, self.sim_watch)
+
+    def sim_install(self, then=None):
+        """安裝計算套件（使用者按了才裝）；then＝裝好之後接著做的事（從「補算」來的就接著補算）"""
+        if self._sim_inst and not self._sim_inst["done"]:
+            return
+        gpu = has_nvidia()
+        where = "裝在調音台自己的資料夾裡、不影響電腦裡其他程式" if sim_uv() else "裝在你的 Python 裡"
+        if not messagebox.askokcancel("安裝計算套件", (
+                f"補算要另外安裝計算套件（PyTorch 和 h5py），{where}；不補算就不用裝。\n\n"
+                + ("偵測到 NVIDIA 顯示卡：裝顯示卡版，下載約 3 GB、裝好約 5 GB。" if gpu else
+                   "沒有偵測到 NVIDIA 顯示卡：裝處理器版，下載約 200 MB。用處理器算會很慢（一個音樂廳要好幾個小時）。")
+                + "\n下載時間看網路速度；之後隨時可以在「房間模擬」移除。\n\n要安裝嗎？"),
+                parent=self._sim_win or self.root):
+            return
+        self.sim_pip_run(sim_install_cmds(gpu), gpu, False, then)
+
+    def sim_remove(self):
+        if not messagebox.askokcancel("移除計算套件", "移除 PyTorch 和 h5py，空出幾 GB？已經補算好的房間會留著；"
+                                      "之後要再補算時再裝就好。", parent=self._sim_win or self.root):
+            return
+        self.sim_pip_run(sim_remove_cmds(), has_nvidia(), True, None)
+
+    def sim_pip_run(self, cmds, gpu, remove, then):
+        inst = self._sim_inst = dict(started=time.time(), done=False, ok=False, msg="", gpu=gpu, remove=remove, then=then)
+
+        def work():
+            env = {**os.environ, "UV_NO_CACHE": "1", "PYTHONIOENCODING": "utf-8", "PIP_NO_INPUT": "1"}
+            try:
+                with open(SIM_INSTALL_LOG, "w", encoding="utf-8") as log:
+                    for cmd in cmds:
+                        log.write("> " + " ".join(cmd) + "\n")
+                        log.flush()
+                        r = subprocess.run(cmd, stdout=log, stderr=subprocess.STDOUT, env=env, cwd=APP_DIR,
+                                           creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+                        if r.returncode:
+                            raise RuntimeError(last_line(SIM_INSTALL_LOG) or f"結束碼 {r.returncode}")
+                inst["ok"] = True
+            except Exception as e:
+                inst["msg"] = str(e)[:200]
+            inst["done"] = True
+        threading.Thread(target=work, daemon=True).start()
+        self.root.after(3000, self.sim_watch)
+
+    def sim_fill(self):
+        """把現在這個頭型缺的房間算起來（計算套件還沒裝就先問要不要裝，裝好接著算）"""
+        hid = current_head()
+        _st, running = self.sim_running()
+        todo = sim_todo(hid)
+        if running or hid == "KU100" or not todo:
+            return
+        if not sim_ready():
+            self.sim_install(then=self.sim_fill)
+            return
+        if not os.path.exists(SIM_SCRIPT):
+            messagebox.showerror("補算", f"找不到模擬程式：{SIM_SCRIPT}", parent=self._sim_win or self.root)
+            return
+        gpu = has_nvidia()
+        secs = sum(SIM_SECONDS.get(s, 900) for s in todo) * (1 if gpu else 6)
+        dl = "" if os.path.exists(os.path.join(HEADS_DIR, hid + ".npz")) else \
+            "\n會先下載這個人的完整頭部量測（SADIE II 資料庫，約 10 MB）。"
+        if not messagebox.askokcancel("補算", (
+                f"用 {head_name(hid)} 算：{'、'.join(SIM_NAMES[s] for s in todo)}\n大約 {self.fmt_min(secs)}"
+                + ("，顯示卡會滿載（照常聽歌沒問題）。" if gpu else "（沒有 NVIDIA 顯示卡，用處理器算）。") + dl
+                + "\n隨時可以在「房間模擬」停止，算好的房間會先存起來；全部算好會自動換上。"),
+                parent=self._sim_win or self.root):
+            return
+        try:
+            if os.path.exists(SIM_PROGRESS):
+                os.remove(SIM_PROGRESS)  # 舊的進度不要讓視窗以為已經算完
+            log = open(SIM_LOG, "w", encoding="utf-8")
+            self._sim_proc = subprocess.Popen(
+                [sim_python(), SIM_SCRIPT, "--head", hid] + todo, cwd=APP_DIR, stdout=log, stderr=subprocess.STDOUT,
+                env={**os.environ, "PYTHONIOENCODING": "utf-8"}, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+            log.close()
+        except OSError as e:
+            messagebox.showerror("補算", f"啟動失敗：{e}", parent=self._sim_win or self.root)
+            return
+        self._sim_was = True
+        self.root.after(3000, self.sim_watch)
+
+    def sim_stop(self):
+        st, running = self.sim_running()
+        if not running or not messagebox.askokcancel(
+                "停止計算", "停止補算？已經算好的房間都有存起來，正在算的這個會放棄。", parent=self._sim_win or self.root):
+            return
+        pid = st["pid"] if st and st["alive"] else self._sim_proc.pid
+        try:
+            pid_kill(pid)
+        except OSError as e:
+            messagebox.showerror("停止計算", f"停不下來：{e}", parent=self._sim_win or self.root)
 
     # 頭型測驗：只聽前方、一次比兩個（配對比較：同一次配戴下比，耳機戴歪兩邊一樣歪，結果還是準）。
     # 先比各組代表（依前方的頻率響應＋兩耳時間差分好的組），再在贏的那組裡細比，最後重新戴耳機確認一次

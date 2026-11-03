@@ -2,7 +2,9 @@
 執行：python 殘響模擬.py [房間…] [--quick]（--quick＝聲線少、快速試算）
 　　　python 殘響模擬.py --heads <解壓的 SOFA 資料夾>（做所有頭的試聽檔）
 　　　python 殘響模擬.py --head <代號> [房間…]（用那個人的頭算，存到 殘響/頭部/<代號>/；調音台可以當成另一個「頭型」切換；
-　　　　代號用逗號隔開（H3,H4,…）＝幾個頭一起算：房間只算一次，時間跟一個頭差不多）
+　　　　代號用逗號隔開（H3,H4,…）＝幾個頭一起算：房間只算一次，時間跟一個頭差不多；
+　　　　還沒有那個人的完整頭部量測就先從 SADIE II 下載（約 10 MB）→ 調音台「房間模擬」的補算就是跑這個）
+需要：numpy、PyTorch（有 NVIDIA 顯示卡用 GPU 版）、h5py（讀 SOFA）。調音台的「房間模擬」可以幫你裝
 
 做法（建築聲學軟體的「混合法」：Vorländer《Auralization》2008；ODEON、RAVEN 的架構）
 1. 房間形狀：平面多邊形組成（陽台、欄杆、舞台、包廂、窗、吸音板…），每一面有自己的材質（9 個八度頻段的吸音、散射係數）
@@ -56,6 +58,8 @@ RAYS = 1 << (20 if QUICK else 25)
 CAL_RAYS = 1 << (19 if QUICK else 23)
 CHUNK = 1 << 19
 DEV = "cuda" if torch.cuda.is_available() else "cpu"
+if DEV == "cpu" and not QUICK:  # 沒有 NVIDIA 顯示卡：聲線減為四分之一（後段的能量包絡還是很平滑），時間約少 4 倍
+    RAYS, CAL_RAYS = RAYS >> 2, CAL_RAYS >> 1
 
 # 材質：吸音係數、散射係數（63 Hz–16 kHz）、是否只有散射（觀眾、樂團、人群：貼著它們的反射會被吸掉、打散，
 # 座椅凹陷效應 Schultz & Watters 1964）。數值是典型值（Vorländer 2008 附錄、Kuttruff《Room Acoustics》），
@@ -290,6 +294,40 @@ def minphase(mag):
 HRTF_FILE = os.path.join(HERE, "殘響", "hrtf_ku100.npz")
 HRTF_TAPS = 1024
 HEADS_DIR = os.path.join(HERE, "殘響", "頭部")      # 可以挑的頭：KU100 假人頭＋SADIE II 的 18 位真人（H3–H20）
+
+
+SADIE_URL = "https://zenodo.org/records/12092466/files/{}_HRIR_SOFA.zip?download=1"  # SADIE II 的公開下載
+
+
+def fetch_head(hid):
+    """SADIE II 這個人的頭部量測（96 kHz 的 SOFA，壓縮檔約 10 MB）→ 頭部/<代號>.npz、<代號>_30.npy。
+    殘響/頭部 裡已經有下載好的 <代號>_HRIR_SOFA.zip 就直接用（不能上網時可以自己先下載放進去）"""
+    import io
+    import urllib.request
+    import zipfile
+    os.makedirs(HEADS_DIR, exist_ok=True)
+    local = os.path.join(HEADS_DIR, f"{hid}_HRIR_SOFA.zip")
+    if os.path.exists(local):
+        with open(local, "rb") as fh:
+            data = fh.read()
+    else:
+        progress(stage=f"下載 {hid} 的頭部量測（SADIE II，約 10 MB）")
+        req = urllib.request.Request(SADIE_URL.format(hid), headers={"User-Agent": "headphone-tuner"})
+        with urllib.request.urlopen(req, timeout=120) as r:
+            data = r.read()
+    z = zipfile.ZipFile(io.BytesIO(data))
+    name = next(n for n in z.namelist() if n.lower().endswith(".sofa") and "_96k_" in n.lower())
+    sofa, part = os.path.join(HEADS_DIR, f"{hid}_96K.sofa.tmp"), os.path.join(HEADS_DIR, f"{hid}.part.npz")
+    with open(sofa, "wb") as fh:
+        fh.write(z.read(name))
+    progress(stage=f"整理 {hid} 的頭部量測")
+    try:
+        build_hrtf(sofa, part, f"SADIE II {hid}（對稱化）", os.path.join(HEADS_DIR, hid + "_30.npy"), sym=True)
+        os.replace(part, os.path.join(HEADS_DIR, hid + ".npz"))  # 做完才換：中斷了不會留下壞掉的檔
+    finally:
+        for p in (sofa, part):
+            if os.path.exists(p):
+                os.remove(p)
 
 
 def head_path():
@@ -1030,9 +1068,9 @@ _PROG = {}
 
 def progress(**kw):
     """更新進度檔（寫完才換，調音台不會讀到一半）"""
-    if QUICK:
-        return
     _PROG.update(kw, updated=time.time())
+    if QUICK:  # 試算：不寫進度檔（記在記憶體裡，後面照常用）
+        return
     try:
         with open(PROGRESS + ".tmp", "w", encoding="utf-8") as fh:
             json.dump(_PROG, fh, ensure_ascii=False)
@@ -1291,6 +1329,12 @@ def main():
         build_heads(sys.argv[sys.argv.index("--heads") + 1])
         return
     args = [a for a in sys.argv[1:] if a != HEAD_ARG]
+    names = [a for a in args if not a.startswith("--")] or list(SCENES)
+    progress(head=",".join(HEAD_IDS) or "KU100", rooms=names, done=[], current=None, stage="", started=time.time(),
+             pid=os.getpid(), finished=None)
+    for h in HEAD_IDS:  # 還沒有這個人的完整頭部量測（調音台只附算好的結果）：先下載、整理
+        if h != "KU100" and not os.path.exists(os.path.join(HEADS_DIR, h + ".npz")):
+            fetch_head(h)
     heads = [(HRTF_FILE, os.path.join(HERE, "殘響")) if h == "KU100" else  # KU100＝主要那一組，可以跟真人一起算
              (os.path.join(HEADS_DIR, h + ".npz"), OUT if len(HEAD_IDS) == 1 else os.path.join(os.path.dirname(OUT), h))
              for h in HEAD_IDS] or [(head_path(), OUT)]
@@ -1300,13 +1344,10 @@ def main():
         import shutil
         os.makedirs(out, exist_ok=True)
         shutil.copy(os.path.join(HEADS_DIR, h + "_30.npy"), os.path.join(out, "hrtf30.npy"))
-    names = [a for a in args if not a.startswith("--")] or list(SCENES)
     paths = [os.path.join(out, "結果.json") for _p, out in heads]
     reports = [json.load(open(p, encoding="utf-8")) if os.path.exists(p) else {} for p in paths]
     for r in reports:
         r.update(device=torch.cuda.get_device_name(0) if DEV == "cuda" else "CPU", version=5)
-    progress(head=",".join(HEAD_IDS) or "KU100", rooms=names, done=[], current=None, stage="", started=time.time(),
-             pid=os.getpid(), finished=None)
     for name in names:
         for r, rep in zip(reports, render(name, heads)):
             r[name] = rep
