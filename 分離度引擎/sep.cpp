@@ -17,7 +17,32 @@
 //    兩聲道分出來的環境音左右幾乎反相（人聲在中間時只剩「左減右」）→ 右邊再過一個固定的全通濾波
 //    （相位 ±2.4 弧度隨頻率起伏、群延遲最多約 2.4 ms）把左右打散，兩顆環繞喇叭才不會互相抵消（Kendall 1995 的去相關）
 //
-// 參數：Strength（0–1）。Equalizer APO 設定：VSTPlugin: Library "...\sep_v1.dll" ChunkData "<base64 的 strength=0.60;mode=1;amb=0.60>"
+// 7. 直接擺位（mode=4，第 3 代）：虛擬喇叭原本是兩顆喇叭「湊」出中間的樂器（幻象聲像：兩耳各收到兩顆喇叭、
+//    時間不同 → 梳狀干涉、位置跟頭型有關）。這裡改成每個頻率格的主成分照它的位置（正切定律：兩顆 ±30° 喇叭會
+//    湊出來的角度，Bauer 1961）直接套那個方向的頭部量測 → 輸出就是兩耳的直達聲；環境音照兩顆喇叭的方向。
+//    頭部量測由調音台做成表（table=…：每 1° 一組、最小相位＋兩耳各自的延遲，Kulkarni 等 1999 證明這樣聽起來
+//    跟原本的量測一樣），房間反射另外由調音台摺積（同一個外掛 mode=1 的喇叭訊號）→ 延遲完全一樣
+//
+// 8. 動態處理（mode=3，時間域、沒有延遲）：
+//    不刺耳（harsh=1–3）：3.5 kHz（刺耳）、7 kHz（齒音）各一個頻帶，跟 300 Hz–2.5 kHz 比（動態等化，de-esser 的作法）。
+//    第 2 版（2026-11-03）：第 1 版只跟固定門檻比，實測 8 首歌「輕」有 15% 的時間在壓、7 kHz 一帶整首平均少 1.2 dB
+//    （最多的一首少 2 dB）→ 壓到原音。現在這些條件都要成立才壓：
+//      1. 比固定門檻亮（偏暗的歌不動）
+//      2. 比這首歌最近的「平常」（中位數）亮：3.5k 8／6／4 dB、7k 11／9／7 dB 以上（輕／中／強）→ 歌本身的亮度算原音
+//      3. 只有這一段突出：多出來的能量上面的頻帶沒有跟著多（鈸、小鼓、沙鈴是整片一起亮 → 原音，不壓；
+//         齒音只有 5–10 kHz、尖銳的人聲只有 3–5 kHz）
+//      4. 音樂在它平常的大小（比平常小 15 dB 以上的安靜段落漸漸不壓）
+//    壓的量：軟膝（門檻附近慢慢開始）、輕 2:1 最多 3 dB、中 3:1 最多 6 dB、強 4:1 最多 9 dB
+//    第 3 版（2026-11-03，開了之後聽起來糊、粗糙）：第 2 版壓的量直接跟著能量包絡走，
+//    人聲每個音高週期都會讓它抖一下（實測「中」動作時在 15–300 Hz 抖約 ±0.6 dB）＝快速的音量起伏＝聽起來糙、細節糊掉。
+//    改成「一下就壓、慢慢放」（2 ms 壓、60 ms 放），壓的量只跟著句子、齒音走，不跟著音高抖
+//    實測（8 首歌、48 kHz）：輕 在一般的歌壓超過 1 dB 的時間 0.5%（3.5k）／2%（7k，大多是齒音），第 1 版 15%／16%；
+//    鈸幾乎不壓（第 1 版壓 1–2 dB）
+//    遊戲（game=1）：150 Hz 以下大聲時壓（爆炸、4:1）、整體太大聲時壓（槍聲、3:1）、1–5 kHz 小聲時往上拉
+//    （腳步、換彈：最多 +9 dB，−70 dBFS 以下不拉，底噪不會被放大；拉完的峰值不超過 −1 dBFS）
+//    左右聲道用同一個增益 → 方向不變。每段都是「原音＋(增益−1)×那個頻帶」（Regalia & Mitra 1987）：增益 1 時逐位元原音
+//
+// 參數：Equalizer APO 設定：VSTPlugin: Library "...\sep_v1.dll" ChunkData "<base64 的 strength=0.60;mode=1;amb=0.60>"
 #include <algorithm>
 #include <atomic>
 #include <cmath>
@@ -29,6 +54,7 @@
 #include <vector>
 
 typedef std::complex<double> cd;
+typedef std::complex<float> cf;
 
 struct AEffect;
 typedef intptr_t (*audioMasterCallback)(AEffect*, int32_t, int32_t, intptr_t, void*, float);
@@ -74,13 +100,241 @@ const double kItdLo = 1000.0, kItdHi = 2000.0;  // 時間差只加在這以下�
 const double kTopHz = 24000.0;               // 這以上不處理
 const double kExpand = 1.5;                  // 強度 1 時，中間附近的位置變成 2.5 倍
 const double kLowCut0 = 150.0, kLowCut1 = 250.0;
+const double kSpkDeg = 30.0;                 // 虛擬喇叭 ±30°（直接擺位：最左、最右的聲音就在喇叭的位置）
+// 推開、加時間差、分出環境音、直接擺位都只用在「一個聲音明顯主導」的頻率格（方向性 ≥ kDirHi 全用、≤ kDirLo 不用）：
+// 好幾個聲音混在同一格
+// （搖滾左右兩把吉他＋中間人聲）時主成分是妥協的方向 → 兩把吉他各有一半被拉到正中間跟人聲擠在一起
+// （聽起來人聲被壓扁）。實測（人聲＋左右吉他，每 50 ms 人聲的兩耳音量差）：
+// 舊的人聲一直被吉他拉著飄（起伏 1.8 dB），照方向性之後 0.14 dB。這種格：直接擺位照兩顆喇叭原樣、
+// 耳機的分離度不推也不加時間差、環繞不把它當環境音送到後面（裡面其實是別的樂器）
+// 單一聲音＋殘響的方向性約 0.8–1，兩三個聲音約 0.2–0.75
+const double kDirLo = 0.5, kDirHi = 0.85;
+
+// ---------------------------------------------------------------- 動態處理（mode=3）
+struct Biquad {  // 轉置直接二型，每個聲道各自的狀態
+    double b0 = 0, b1 = 0, b2 = 0, a1 = 0, a2 = 0, z1[2] = {0, 0}, z2[2] = {0, 0};
+    void bandpass(double fs, double f0, double q) {  // RBJ 帶通（中心 0 dB）＝(1 − 二階全通)/2
+        double w = 2 * kPi * f0 / fs, al = std::sin(w) / (2 * q), a0 = 1 + al;
+        b0 = al / a0, b1 = 0, b2 = -al / a0, a1 = -2 * std::cos(w) / a0, a2 = (1 - al) / a0;
+        z1[0] = z1[1] = z2[0] = z2[1] = 0;
+    }
+    void highpass(double fs, double f0, double q) {  // RBJ 高通
+        double w = 2 * kPi * f0 / fs, al = std::sin(w) / (2 * q), cw = std::cos(w), a0 = 1 + al;
+        b0 = (1 + cw) / 2 / a0, b1 = -(1 + cw) / a0, b2 = (1 + cw) / 2 / a0, a1 = -2 * cw / a0, a2 = (1 - al) / a0;
+        z1[0] = z1[1] = z2[0] = z2[1] = 0;
+    }
+    inline double run(int c, double x) {
+        double y = b0 * x + z1[c];
+        z1[c] = b1 * x - a1 * y + z2[c];
+        z2[c] = b2 * x - a2 * y;
+        return y;
+    }
+};
+
+struct Lowpass1 {  // 一階低通＝(1 + 一階全通)/2
+    double c = 0, x1[2] = {0, 0}, y1[2] = {0, 0};
+    void set(double fs, double fc) {
+        double t = std::tan(kPi * fc / fs);
+        c = (t - 1) / (t + 1);
+        x1[0] = x1[1] = y1[0] = y1[1] = 0;
+    }
+    inline double run(int ch, double x) {
+        double ap = c * x + x1[ch] - c * y1[ch];
+        x1[ch] = x, y1[ch] = ap;
+        return 0.5 * (x + ap);
+    }
+};
+
+struct Env {  // 能量包絡：上升、下降各自的時間常數
+    double a = 0, r = 0, e = 0;
+    void set(double fs, double att, double rel) {
+        a = std::exp(-1 / (att * fs)), r = std::exp(-1 / (rel * fs)), e = 0;
+    }
+    inline void run(double p) { e = p > e ? a * e + (1 - a) * p : r * e + (1 - r) * p; }
+};
+
+static inline double db10(double p) { return 10 * std::log10(p + 1e-20); }
+static inline double clampd(double x, double lo, double hi) { return std::min(hi, std::max(lo, x)); }
+
+struct Median {  // 中位數追蹤：比目前的估計大就往上一小步、小就往下一小步 → 停在中間。
+    double v = 0, step = 0;  // 每次只動一點點 → 很大聲的那幾下拉不動它（跟平均不一樣）
+    void set(double init, double perSec, double rate) { v = init, step = perSec / rate; }
+    inline void run(double x) { v += x > v ? step : -step; }
+};
+
+// 不刺耳的等級：比這首歌的中位數多 m1（3.5k）、m2（7k）dB 才算刺耳（7k 的起伏本來就大：齒音、鈸）；
+// slope＝壓的比例（0.5＝2:1）、mx＝最多壓幾 dB、rise＝中位數每秒最多動幾 dB（強：慢慢適應 → 一直刺耳的段落也會一直壓）
+struct HarshLevel { double m1, m2, slope, mx, rise; };
+const HarshLevel kHarsh[4] = {{0, 0, 0, 0, 1}, {8, 11, 0.5, 3, 3}, {6, 9, 2.0 / 3, 6, 2}, {4, 7, 0.75, 9, 1}};
+const double kKnee = 4;         // 軟膝寬度（dB）
+const double kQuietDb = -70;    // 中頻比這小＝幾乎沒聲音：不壓、不更新；連續 0.5 秒＝換歌了 → 重新開始
+const double kSoftBelow = 15;   // 比這首歌平常的大小小 15 dB 以上就漸漸不壓（再小 6 dB 完全不壓）
+
+static inline double knee(double x) {  // 超過門檻多少 → 要壓的量（還沒乘比例）
+    if (x <= -kKnee / 2) return 0;
+    if (x >= kKnee / 2) return x;
+    return (x + kKnee / 2) * (x + kKnee / 2) / (2 * kKnee);
+}
+
+const double kLookSec = 0.002;  // 動態處理先看 2 ms：增益在聲音到之前就調好（齒音、槍聲的開頭不會漏掉）
+const double kCeil = 0.891;     // 遊戲往上拉之後的峰值上限（−1 dBFS）
+
+struct Dyn {
+    int harsh = 0, game = 0;
+    Biquad bp1, bp2, hp3a, hp3b, bpr, bpu;
+    Biquad s1a, s1b, s2a, s2b;  // 不刺耳的偵測用四階（兩個二階串起來）：二階的裙邊會把大很多的中頻漏進來，齒音看起來只多 5–10 dB
+    Lowpass1 low;
+    Env e1, e2, e3, er, elo, eall, eup;
+    double pk = 0, pkr = 0, gs = 0, upA = 0, upR = 0, upCur = 0;
+    double g1 = 1, g2 = 1, glo = 1, gbb = 1, gup = 1, t1 = 1, t2 = 1, tlo = 1, tbb = 1, tup = 1;
+    Median m1, m2, m3, lvl;  // 不刺耳：這首歌 3.5k、7k、11k 以上跟中頻比的中位數，中頻平常的大小
+    double rate = 0;    // 每秒算幾次目標增益
+    double s1 = 0, s2 = 0, aAtt = 0, aRel = 0;  // 平滑後真正要壓的 dB：一下就壓（aAtt）、慢慢放（aRel）
+    int hset = -1, quiet = 0, quietMax = 0;
+    int cnt = 0, D = 0, wp = 0;
+    std::vector<double> dl[5][2];  // 延遲 D 的原音、低頻、腳步頻帶、刺耳、齒音
+
+    void setup(double fs) {
+        bp1.bandpass(fs, 3500, 1.0);   // 刺耳區（耳道共振、等響曲線最敏感的地方）
+        bp2.bandpass(fs, 7000, 2.0);   // 齒音
+        s1a.bandpass(fs, 3500, 0.7), s1b.bandpass(fs, 3500, 0.7);  // 偵測：跟上面一樣寬（約 2.2–5.5k），1 kHz 少 5 dB、500 Hz 少 11 dB
+        s2a.bandpass(fs, 7000, 1.4), s2b.bandpass(fs, 7000, 1.4);  // 偵測：約 5.6–8.8k，2 kHz 少 10 dB、1 kHz 少 17 dB
+        double fa = std::min(11000.0, 0.35 * fs);  // 11 kHz 以上（四階巴特沃斯，齒音漏進來很少）：只用來判斷是不是整片一起變亮
+        hp3a.highpass(fs, fa, 0.5412), hp3b.highpass(fs, fa, 1.3066);
+        bpr.bandpass(fs, 866, 0.39);   // 參考：300 Hz–2.5 kHz
+        bpu.bandpass(fs, 2500, 0.7);   // 腳步、換彈：約 1–5 kHz
+        low.set(fs, 150);              // 爆炸的低頻
+        e1.set(fs, 0.002, 0.03), e2.set(fs, 0.002, 0.03), e3.set(fs, 0.002, 0.03), er.set(fs, 0.002, 0.03);
+        elo.set(fs, 0.005, 0.25), eall.set(fs, 0.002, 0.15), eup.set(fs, 0.002, 0.1);
+        pk = 0, pkr = std::exp(-1 / (0.15 * fs)), gs = 1 - std::exp(-1 / (0.0005 * fs));
+        upA = 1 - std::exp(-32 / (0.25 * fs)), upR = 1 - std::exp(-32 / (0.005 * fs)), upCur = 0;
+        g1 = g2 = glo = gbb = gup = t1 = t2 = tlo = tbb = tup = 1;
+        rate = fs / 32, quietMax = (int)(0.5 * rate), quiet = 0, hset = -1;
+        aAtt = 1 - std::exp(-1 / (0.002 * rate)), aRel = 1 - std::exp(-1 / (0.06 * rate)), s1 = s2 = 0;
+        cnt = 0, wp = 0, D = (int)std::lround(kLookSec * fs);
+        for (auto& a : dl)
+            for (auto& b : a) b.assign(D + 1, 0.0);
+    }
+
+    double harshOff() const { return harsh == 1 ? 2.0 : harsh == 2 ? 0.0 : -2.0; }  // 固定門檻：輕高一點、強低一點
+
+    void harshInit() {  // 開始、換歌、換等級：從一般歌曲的典型值開始，之後跟著這首歌走
+        const HarshLevel& h = kHarsh[harsh];
+        m1.set(-10, h.rise, rate), m2.set(-17, h.rise, rate), m3.set(-25, h.rise, rate), lvl.set(-30, 3, rate);
+        hset = harsh;
+    }
+
+    void targets() {  // 每 32 個樣本算一次目標增益
+        if (harsh) {
+            if (hset != harsh) harshInit();
+            const HarshLevel& h = kHarsh[harsh];
+            double ref = db10(er.e), q1 = db10(e1.e) - ref, q2 = db10(e2.e) - ref, q3 = db10(e3.e) - ref, r1 = 0, r2 = 0;
+            if (ref < kQuietDb) {  // 幾乎沒聲音：比例沒有意義
+                if (quiet < quietMax && ++quiet == quietMax) harshInit();
+            } else {
+                quiet = 0;
+                lvl.run(ref);
+                double gate = clampd((ref - lvl.v + kSoftBelow + 6) / 6, 0, 1);  // 安靜的段落不壓
+                if (gate > 0.5) m1.run(q1), m2.run(q2), m3.run(q3);             // 也不算進「平常」
+                double x1 = std::min(q1 - (-7 + harshOff()), q1 - m1.v - h.m1);
+                double x2 = std::min(q2 - (-12 + harshOff()), q2 - m2.v - h.m2);
+                // 只有這一段突出才算：比平常多出來的能量（跟中頻比），上面的頻帶多出來的跟它比
+                auto more = [](double q, double m) { return std::max(0.0, std::pow(10, q / 10) - std::pow(10, m / 10)); };
+                double a1 = more(q1, m1.v), a2 = more(q2, m2.v), a3 = more(q3, m3.v);
+                double w1 = clampd((0.6 - (a2 + a3) / (a1 + 1e-20)) / 0.4, 0, 1);  // 尖銳：7k 以上多的 < 20% 全壓、> 60% 不壓
+                double w2 = clampd((0.8 - a3 / (a2 + 1e-20)) / 0.5, 0, 1);         // 齒音：11k 以上多的 < 30% 全壓、> 80% 不壓
+                r1 = std::min(h.mx, h.slope * knee(x1)) * gate * w1;
+                r2 = std::min(h.mx, h.slope * knee(x2)) * gate * w2;
+            }
+            s1 += (r1 > s1 ? aAtt : aRel) * (r1 - s1);
+            s2 += (r2 > s2 ? aAtt : aRel) * (r2 - s2);
+            t1 = std::pow(10, -s1 / 20), t2 = std::pow(10, -s2 / 20);
+        } else {
+            t1 = t2 = 1, s1 = s2 = 0;
+        }
+        if (game) {
+            double rl = clampd((db10(elo.e) + 30) * 0.75, 0, 12);        // 低頻 −30 dBFS 以上 4:1
+            double rb = clampd((db10(eall.e) + 20) * (2.0 / 3), 0, 9);   // 整體 −20 dBFS 以上 3:1
+            double lu = db10(eup.e), up = lu < -35 ? std::min(9.0, (-35 - lu) * 0.5) : 0.0;  // −35 以下往上拉（1:2）
+            up *= clampd((lu + 70) / 6, 0, 1);                              // −70 dBFS 以下不拉
+            double lim = std::max(0.0, -1 - 20 * std::log10(pk + 1e-12) + rb);  // 拉完的峰值 ≤ −1 dBFS
+            upCur += (up > upCur ? upA : upR) * (up - upCur);
+            upCur = std::min(upCur, lim);
+            tlo = std::pow(10, -rl / 20), tbb = std::pow(10, -rb / 20), tup = std::pow(10, upCur / 20);
+        } else {
+            tlo = tbb = tup = 1, upCur = 0;
+        }
+    }
+
+    void process(float** in, float** out, int32_t n) {
+        for (int i = 0; i < n; i++) {
+            double x[2] = {in[0][i], in[1][i]}, b1[2], b2[2], b3[2], s1[2], s2[2], br[2], lo[2], bu[2];
+            for (int c = 0; c < 2; c++) {
+                b1[c] = bp1.run(c, x[c]);
+                b2[c] = bp2.run(c, x[c]);
+                b3[c] = hp3b.run(c, hp3a.run(c, x[c]));
+                s1[c] = s1b.run(c, s1a.run(c, x[c]));
+                s2[c] = s2b.run(c, s2a.run(c, x[c]));
+                br[c] = bpr.run(c, x[c]);
+                lo[c] = low.run(c, x[c]);
+                bu[c] = bpu.run(c, x[c]);
+            }
+            e1.run(0.5 * (s1[0] * s1[0] + s1[1] * s1[1]));
+            e2.run(0.5 * (s2[0] * s2[0] + s2[1] * s2[1]));
+            e3.run(0.5 * (b3[0] * b3[0] + b3[1] * b3[1]));
+            er.run(0.5 * (br[0] * br[0] + br[1] * br[1]));
+            elo.run(0.5 * (lo[0] * lo[0] + lo[1] * lo[1]));
+            eall.run(0.5 * (x[0] * x[0] + x[1] * x[1]));
+            eup.run(0.5 * (bu[0] * bu[0] + bu[1] * bu[1]));
+            double p = std::max(std::fabs(x[0]), std::fabs(x[1]));
+            pk = p > pk ? p : pkr * pk;  // 這 2 ms 內會出現的峰值（偵測沒有延遲、聲音有）
+            if (++cnt >= 32) {
+                cnt = 0;
+                targets();
+            }
+            g1 += gs * (t1 - g1), g2 += gs * (t2 - g2), glo += gs * (tlo - glo), gbb += gs * (tbb - gbb), gup += gs * (tup - gup);
+            if (game) gup = std::min(gup, std::max(1.0, kCeil / (gbb * pk + 1e-12)));  // 大聲的來了：往上拉馬上收掉
+            int rp = (wp + 1) % (D + 1);
+            for (int c = 0; c < 2; c++) {
+                double v[5] = {x[c], lo[c], bu[c], b1[c], b2[c]};
+                for (int j = 0; j < 5; j++) dl[j][c][wp] = v[j];
+                double xd = dl[0][c][rp], base = gbb * (xd + (glo - 1) * dl[1][c][rp] + (g1 - 1) * dl[3][c][rp] +
+                                                      (g2 - 1) * dl[4][c][rp]);
+                double y = base + gbb * (gup - 1) * dl[2][c][rp];
+                if (std::fabs(y) > kCeil && std::fabs(y) > std::fabs(base))  // 保險：往上拉的那份不准超過 −1 dBFS
+                    y = std::fabs(base) > kCeil ? base : std::copysign(kCeil, y);
+                out[c][i] = (float)y;
+            }
+            wp = rp;
+        }
+    }
+};
+
+// ---------------------------------------------------------------- 直接擺位的頭部量測表（mode=4，調音台做的）
+// 檔案：'BFH1'、取樣率、N、K、方向數（int32）、第一個角度、角度間隔（float，度，左＝正）、保留（int32）；
+// 接著 M[方向][耳][K]（complex<float>，最小相位、已含音色補償）、tau[方向][耳]（float，秒，相對正前方到達頭中心）
+struct Table {
+    int K = 0, nAz = 0;
+    double az0 = 0, step = 1;
+    std::vector<cf> M;
+    std::vector<float> tau;
+    std::vector<cd> spk;  // 兩顆喇叭（+30°、−30°）到兩耳：[LL, RL, LR, RR][K]
+
+    cd h(int a, int e, int k, double w) const {
+        return cd(M[((size_t)a * 2 + e) * K + k]) * std::polar(1.0, -w * tau[a * 2 + e]);
+    }
+};
 
 struct Sep {
     AEffect fx;
     std::atomic<float> strength{0.6f};
-    std::atomic<int> mode{0};       // 0＝一般、1＝只要前方、2＝只要環境音（環繞）
+    std::atomic<int> mode{0};       // 0＝一般、1＝只要前方、2＝只要環境音（環繞）、3＝動態處理、4＝直接擺位
     std::atomic<float> amb{0.0f};   // 環繞：環境音送到側後方的比例
-    char chunk[64];
+    char chunk[512];
+    char path[400] = {0};           // 直接擺位的頭部量測表
+    std::atomic<Table*> tab{nullptr};
+    std::vector<Table*> oldTabs;    // 換表時舊的不馬上刪（處理中可能還在用），關閉時一起刪
+    Dyn dyn;
     double fs = 0;
     int N = 0, H = 0, fresh = 0;
     std::vector<double> win, in[2], ola[2], q[2];
@@ -93,6 +347,11 @@ struct Sep {
     int kTop = 0;
     double alpha = 0;
     int qn = 0, qr = 0;  // 輸出佇列（已完成的樣本數、讀取位置）
+
+    ~Sep() {
+        delete tab.load();
+        for (Table* t : oldTabs) delete t;
+    }
 
     void setup(double rate) {
         if (rate <= 0) rate = 48000;
@@ -147,7 +406,49 @@ struct Sep {
         alpha = std::exp(-(double)H / (kSmoothSec * fs));
         fresh = 0;
         qn = qr = 0;
-        fx.initialDelay = N - 1;  // 同一個呼叫裡收滿 H 個就輸出 → 實際延遲 N−1 個樣本
+        dyn.setup(fs);
+        fx.initialDelay = mode.load() == 3 ? dyn.D : N - 1;  // 同一個呼叫裡收滿 H 個就輸出 → 實際延遲 N−1 個樣本（動態處理：先看的 2 ms）
+        loadTable();
+    }
+
+    void loadTable() {  // 表的取樣率、窗長要跟現在的一樣，不然不用（直接擺位改成一般的喇叭訊號）
+        if (!path[0] || fs <= 0) return;
+        FILE* fh = std::fopen(path, "rb");
+        if (!fh) return;
+        char mg[4];
+        int32_t hd[4], rsv;
+        float a0, st;
+        Table* t = nullptr;
+        if (std::fread(mg, 1, 4, fh) == 4 && !std::memcmp(mg, "BFH1", 4) && std::fread(hd, 4, 4, fh) == 4 &&
+            std::fread(&a0, 4, 1, fh) == 1 && std::fread(&st, 4, 1, fh) == 1 && std::fread(&rsv, 4, 1, fh) == 1 &&
+            hd[0] == (int32_t)std::lround(fs) && hd[1] == N && hd[2] > 1 && hd[2] <= N / 2 + 1 && hd[3] >= 3 &&
+            hd[3] <= 721 && st > 0) {
+            t = new Table();
+            t->K = hd[2], t->nAz = hd[3], t->az0 = a0, t->step = st;
+            t->M.resize((size_t)t->nAz * 2 * t->K);
+            t->tau.resize((size_t)t->nAz * 2);
+            int iL = (int)std::lround((kSpkDeg - a0) / st), iR = (int)std::lround((-kSpkDeg - a0) / st);
+            if (std::fread(t->M.data(), sizeof(cf), t->M.size(), fh) != t->M.size() ||
+                std::fread(t->tau.data(), 4, t->tau.size(), fh) != t->tau.size() || iL < 0 || iR < 0 ||
+                iL >= t->nAz || iR >= t->nAz) {
+                delete t;
+                t = nullptr;
+            } else {
+                t->spk.resize(4 * (size_t)t->K);
+                for (int k = 0; k < t->K; k++) {
+                    double w = 2 * kPi * k * fs / N;
+                    t->spk[k] = t->h(iL, 0, k, w);              // 左喇叭 → 左耳
+                    t->spk[t->K + k] = t->h(iR, 0, k, w);       // 右喇叭 → 左耳
+                    t->spk[2 * t->K + k] = t->h(iL, 1, k, w);   // 左喇叭 → 右耳
+                    t->spk[3 * t->K + k] = t->h(iR, 1, k, w);   // 右喇叭 → 右耳
+                }
+            }
+        }
+        std::fclose(fh);
+        if (t) {
+            Table* old = tab.exchange(t);
+            if (old) oldTabs.push_back(old);
+        }
     }
 
     void fft(bool inverse) {
@@ -166,10 +467,45 @@ struct Sep {
         }
     }
 
+    // 主成分分解（頻率格 k）：主成分 sp、它的方向 vL vR、推開後的位置 p2（+1＝最左）、環境音 aL aR；
+    // 回傳 false＝這格幾乎沒聲音
+    bool decomp(int k, int kEnd, double g, cd l, cd r, cd& vL, cd& vR, double& p2, cd& sp, cd& aL, cd& aR,
+                double* dirOut = nullptr) const {
+        double a = 0, b = 0;
+        cd c = 0;
+        for (int j = std::max(1, k - hw[k]); j <= std::min(kEnd, k + hw[k]); j++) {  // 頻率方向平均（約 1 ERB）
+            a += pll[j];
+            b += prr[j];
+            c += plr[j];
+        }
+        double tr = a + b;
+        if (!(tr > 1e-24)) return false;
+        double d = std::sqrt((a - b) * (a - b) + 4 * std::norm(c));
+        double l1 = 0.5 * (tr + d), l2 = 0.5 * (tr - d);
+        if (std::abs(c) > 1e-9 * tr) { vL = l1 - b; vR = std::conj(c); }
+        else if (a >= b) { vL = 1; vR = 0; }
+        else { vL = 0; vR = 1; }
+        double nv = std::sqrt(std::norm(vL) + std::norm(vR));
+        vL /= nv;
+        vR /= nv;
+        double p = std::norm(vL) - std::norm(vR);              // +1＝最左、−1＝最右
+        double dirn = (l1 - l2) / (l1 + l2 + 1e-30);            // 方向性
+        double wd = clampd((dirn - kDirLo) / (kDirHi - kDirLo), 0, 1);  // 一個聲音主導的程度
+        if (dirOut) *dirOut = wd;
+        double kk = kExpand * g * dirn * wd;
+        p2 = p * (1 + kk * (1 - std::fabs(p)));
+        p2 = std::min(1.0, std::max(-1.0, p2));
+        sp = std::conj(vL) * l + std::conj(vR) * r;             // 主成分
+        aL = l - vL * sp, aR = r - vR * sp;                      // 環境音（不動）
+        return true;
+    }
+
     void frame() {
         double s = strength.load(), am = amb.load();
         int md = mode.load();
-        double fa = md == 1 ? std::sqrt(1 - am) : 1.0, sa = std::sqrt(am);
+        const Table* T = md == 4 ? tab.load() : nullptr;
+        if (md == 4 && !T) md = 1;  // 沒有表：改成一般的喇叭訊號（至少有聲音）
+        double fa = (md == 1 || md == 4) ? std::sqrt(1 - am) : 1.0, sa = std::sqrt(am);
         for (int i = 0; i < N; i++) Z[i] = cd(in[0][i] * win[i], in[1][i] * win[i]);
         fft(false);
         int K = N / 2 + 1;
@@ -186,53 +522,69 @@ struct Sep {
             prr[k] = alpha * prr[k] + (1 - alpha) * std::norm(r);
             plr[k] = alpha * plr[k] + (1 - alpha) * l * std::conj(r);
         }
-        if (md == 2)  // 只要環境音：不處理的頻率（低音、超音波）沒有環境音
-            for (int k = 0; k < K; k++)
-                if (k < 1 || k > kTop || gate[k] <= 0) L[k] = R[k] = 0;
-        for (int k = 1; k <= kTop; k++) {
-            double g = gate[k] * s;
-            if (g <= 0 && !(md && gate[k] > 0)) continue;
-            cd l = L[k], r = R[k];
-            double a = 0, b = 0;
-            cd c = 0;
-            for (int j = std::max(1, k - hw[k]); j <= std::min(kEnd, k + hw[k]); j++) {  // 頻率方向平均（約 1 ERB）
-                a += pll[j];
-                b += prr[j];
-                c += plr[j];
+        if (md == 4) {  // 直接擺位：輸出兩耳的直達聲
+            const double tn = std::tan(kSpkDeg * kPi / 180);
+            for (int k = 0; k < K; k++) {
+                if (k >= T->K) {
+                    L[k] = R[k] = 0;
+                    continue;
+                }
+                cd l = L[k], r = R[k];
+                const cd *sLL = &T->spk[k], *sRL = &T->spk[T->K + k], *sLR = &T->spk[2 * T->K + k],
+                         *sRR = &T->spk[3 * T->K + k];
+                cd oL = *sLL * l + *sRL * r, oR = *sLR * l + *sRR * r;  // 兩顆喇叭的直達聲
+                double w = (k >= 1 && k <= kTop) ? gate[k] : 0.0;
+                cd vL, vR, sp, aL, aR;
+                double p2, dn = 0;
+                if (w > 0 && decomp(k, kEnd, gate[k] * s, l, r, vL, vR, p2, sp, aL, aR, &dn)) {
+                    w *= dn;  // 好幾個聲音混在一起：照喇叭原樣
+                    double fk = std::sqrt(1 - am * dn);  // 環繞：只把有把握的環境音分到後面
+                    double gl = std::sqrt(0.5 * (1 + p2)), gr = std::sqrt(0.5 * (1 - p2));
+                    double th = std::atan(tn * (gl - gr) / (gl + gr + 1e-30)) * 180 / kPi;  // 正切定律
+                    double x = std::min((double)T->nAz - 1.000001, std::max(0.0, (th - T->az0) / T->step));
+                    int i0 = (int)x;
+                    double u = x - i0;
+                    size_t b0 = (size_t)i0 * 2 * T->K + k, b1 = b0 + 2 * (size_t)T->K;
+                    cd mL = (1 - u) * cd(T->M[b0]) + u * cd(T->M[b1]);
+                    cd mR = (1 - u) * cd(T->M[b0 + T->K]) + u * cd(T->M[b1 + T->K]);
+                    double tL = (1 - u) * T->tau[i0 * 2] + u * T->tau[i0 * 2 + 2];
+                    double tR = (1 - u) * T->tau[i0 * 2 + 1] + u * T->tau[i0 * 2 + 3];
+                    cd dL = mL * std::polar(1.0, -omega[k] * tL) * sp + fk * (*sLL * aL + *sRL * aR);
+                    cd dR = mR * std::polar(1.0, -omega[k] * tR) * sp + fk * (*sLR * aL + *sRR * aR);
+                    oL = w * dL + (1 - w) * oL;
+                    oR = w * dR + (1 - w) * oR;
+                }
+                L[k] = oL;
+                R[k] = oR;
             }
-            double tr = a + b;
-            if (!(tr > 1e-24)) {
-                if (md == 2) L[k] = R[k] = 0;
-                continue;
-            }
-            double d = std::sqrt((a - b) * (a - b) + 4 * std::norm(c));
-            double l1 = 0.5 * (tr + d), l2 = 0.5 * (tr - d);
-            cd vL, vR;
-            if (std::abs(c) > 1e-9 * tr) { vL = l1 - b; vR = std::conj(c); }
-            else if (a >= b) { vL = 1; vR = 0; }
-            else { vL = 0; vR = 1; }
-            double nv = std::sqrt(std::norm(vL) + std::norm(vR));
-            vL /= nv;
-            vR /= nv;
-            double p = std::norm(vL) - std::norm(vR);              // +1＝最左、−1＝最右
-            double dirn = (l1 - l2) / (l1 + l2 + 1e-30);            // 方向性
-            double kk = kExpand * g * dirn;
-            double p2 = p * (1 + kk * (1 - std::fabs(p)));
-            p2 = std::min(1.0, std::max(-1.0, p2));
-            cd sp = std::conj(vL) * l + std::conj(vR) * r;          // 主成分
-            cd aL = l - vL * sp, aR = r - vR * sp;                   // 環境音（不動）
-            double aL0 = std::abs(vL), aR0 = std::abs(vR);
-            cd uL = (aL0 > 1e-12 ? vL / aL0 : cd(1, 0)) * std::sqrt(0.5 * (1 + p2));
-            cd uR = (aR0 > 1e-12 ? vR / aR0 : cd(1, 0)) * std::sqrt(0.5 * (1 - p2));
-            double tau = kItdMax * g * p2 * itdw[k];                // 偏左 → 右耳晚到（只在低頻）
-            if (tau > 0) uR *= std::polar(1.0, -omega[k] * tau);
-            else if (tau < 0) uL *= std::polar(1.0, omega[k] * tau);
-            if (md == 2) {
-                L[k] = sa * aL;
-                R[k] = sa * aR * decor[k];
-            } else {
-                L[k] = uL * sp + fa * aL;
-                R[k] = uR * sp + fa * aR;
+        } else {
+            if (md == 2)  // 只要環境音：不處理的頻率（低音、超音波）沒有環境音
+                for (int k = 0; k < K; k++)
+                    if (k < 1 || k > kTop || gate[k] <= 0) L[k] = R[k] = 0;
+            for (int k = 1; k <= kTop; k++) {
+                double g = gate[k] * s;
+                if (g <= 0 && !(md && gate[k] > 0)) continue;
+                cd l = L[k], r = R[k], vL, vR, sp, aL, aR;
+                double p2, wd = 0;
+                if (!decomp(k, kEnd, g, l, r, vL, vR, p2, sp, aL, aR, &wd)) {
+                    if (md == 2) L[k] = R[k] = 0;
+                    continue;
+                }
+                double aL0 = std::abs(vL), aR0 = std::abs(vR);
+                cd uL = (aL0 > 1e-12 ? vL / aL0 : cd(1, 0)) * std::sqrt(0.5 * (1 + p2));
+                cd uR = (aR0 > 1e-12 ? vR / aR0 : cd(1, 0)) * std::sqrt(0.5 * (1 - p2));
+                double tau = kItdMax * g * wd * p2 * itdw[k];           // 偏左 → 右耳晚到（只在低頻）
+                if (tau > 0) uR *= std::polar(1.0, -omega[k] * tau);
+                else if (tau < 0) uL *= std::polar(1.0, omega[k] * tau);
+                double ak = am * wd;  // 環繞：混在一起的格裡的「環境音」其實是別的樂器 → 留在前面
+                if (md == 2) {
+                    L[k] = std::sqrt(ak) * aL;
+                    R[k] = std::sqrt(ak) * aR * decor[k];
+                } else {
+                    double fk = md == 1 ? std::sqrt(1 - ak) : fa;
+                    L[k] = uL * sp + fk * aL;
+                    R[k] = uR * sp + fk * aR;
+                }
             }
         }
         for (int k = 0; k < K; k++) {  // 組回 L + iR 的頻譜 → 逆轉換的實部＝左、虛部＝右
@@ -254,6 +606,10 @@ struct Sep {
     }
 
     void process(float** inputs, float** outputs, int32_t n) {
+        if (mode.load() == 3) {  // 動態處理：時間域，沒有延遲
+            dyn.process(inputs, outputs, n);
+            return;
+        }
         if (!N) {
             for (int c = 0; c < 2; c++)
                 if (outputs[c] != inputs[c]) std::memcpy(outputs[c], inputs[c], sizeof(float) * n);
@@ -310,17 +666,27 @@ static intptr_t dispatcher(AEffect* e, int32_t op, int32_t index, intptr_t value
         return 1;
     }
     case effGetChunk:
-        std::snprintf(s->chunk, sizeof s->chunk, "strength=%.3f;mode=%d;amb=%.3f", s->strength.load(), s->mode.load(),
-                      s->amb.load());
+        std::snprintf(s->chunk, sizeof s->chunk, "strength=%.3f;mode=%d;amb=%.3f;harsh=%d;game=%d%s%s", s->strength.load(),
+                      s->mode.load(), s->amb.load(), s->dyn.harsh, s->dyn.game, s->path[0] ? ";table=" : "", s->path);
         *(void**)ptr = s->chunk;
         return (intptr_t)std::strlen(s->chunk);
     case effSetChunk: {
-        char b[64] = {0};
-        std::memcpy(b, ptr, (size_t)std::min<intptr_t>(value, 63));
+        char b[512] = {0};
+        std::memcpy(b, ptr, (size_t)std::min<intptr_t>(value, 511));
         const char* p = std::strstr(b, "strength=");
         if (p) s->strength.store((float)std::min(1.0, std::max(0.0, std::atof(p + 9))));
-        if ((p = std::strstr(b, "mode="))) s->mode.store(std::min(2, std::max(0, std::atoi(p + 5))));
+        if ((p = std::strstr(b, "mode="))) s->mode.store(std::min(4, std::max(0, std::atoi(p + 5))));
         if ((p = std::strstr(b, "amb="))) s->amb.store((float)std::min(1.0, std::max(0.0, std::atof(p + 4))));
+        if ((p = std::strstr(b, "harsh="))) s->dyn.harsh = std::min(3, std::max(0, std::atoi(p + 6)));
+        if ((p = std::strstr(b, "game="))) s->dyn.game = std::atoi(p + 5) ? 1 : 0;
+        if ((p = std::strstr(b, "table="))) {  // 路徑到字串結尾（或下一個分號）
+            size_t n = std::strcspn(p + 6, ";");
+            n = std::min(n, sizeof s->path - 1);
+            std::memcpy(s->path, p + 6, n);
+            s->path[n] = 0;
+            s->loadTable();
+        }
+        s->fx.initialDelay = s->mode.load() == 3 ? s->dyn.D : s->N - 1;
         return 1;
     }
     case effCanBeAutomated:

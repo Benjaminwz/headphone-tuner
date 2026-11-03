@@ -54,11 +54,14 @@ Name: "desktopicon"; Description: "在桌面建立「{#AppName}」捷徑"; Group
 [Files]
 Source: "{#Root}\耳機調音台.pyw"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#Root}\tuner.ico"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#Root}\tuner_off.ico"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#Root}\說明.txt"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#Root}\README.md"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#Root}\LICENSE"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#Root}\殘響\*.npy"; DestDir: "{app}\殘響"; Flags: ignoreversion
 Source: "{#Root}\殘響\頭部\*.npy"; DestDir: "{app}\殘響\頭部"; Flags: ignoreversion recursesubdirs
+Source: "{#Root}\殘響\v4.npz"; DestDir: "{app}\殘響"; Flags: ignoreversion
+Source: "{#Root}\殘響\頭部\v4.npz"; DestDir: "{app}\殘響\頭部"; Flags: ignoreversion recursesubdirs
 Source: "{#Root}\殘響\頭部\前方.npz"; DestDir: "{app}\殘響\頭部"; Flags: ignoreversion
 Source: "{#Root}\殘響\頭部\分組.json"; DestDir: "{app}\殘響\頭部"; Flags: ignoreversion
 Source: "{#Root}\分離度引擎\sep_v1.dll"; DestDir: "{app}\分離度引擎"; Flags: ignoreversion

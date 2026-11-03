@@ -9,9 +9,10 @@ import numpy as np
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 TOP, BOTTOM = np.array([0xF2, 0x8C, 0x4C]), np.array([0xCF, 0x5A, 0x1E])  # 跟調音台介面一樣的陶土橘（上亮下深）
+GRAY_TOP, GRAY_BOTTOM = np.array([0xA6, 0xA6, 0xA6]), np.array([0x74, 0x74, 0x74])  # EQ 關掉：右下角小圖示變灰
 
 
-def render(size, ss=8, full=False):
+def render(size, ss=8, full=False, off=False):
     """在 256×256 的座標裡畫，超取樣 ss 倍再平均 → 邊緣平滑。回傳 size×size×4 的 RGBA。
     full＝底色鋪滿整個正方形（iPhone 主畫面圖示：透明的角會變黑，系統會自己裁圓角）"""
     n = size * ss
@@ -29,7 +30,8 @@ def render(size, ss=8, full=False):
     bars = rrect(99, 150, 115, 200, 7) | rrect(120, 118, 136, 200, 7) | rrect(141, 164, 157, 200, 7)  # 等化器
     fg = (band | cups | bars) & bg
     t = (y / 256)[..., None]
-    rgb = (TOP * (1 - t) + BOTTOM * t) * (~fg)[..., None] + 255 * fg[..., None]
+    top, bottom = (GRAY_TOP, GRAY_BOTTOM) if off else (TOP, BOTTOM)
+    rgb = (top * (1 - t) + bottom * t) * (~fg)[..., None] + 255 * fg[..., None]
     rgba = np.concatenate([rgb * bg[..., None], bg[..., None] * 255.0], axis=2)
     rgba = rgba.reshape(size, ss, size, ss, 4).mean(axis=(1, 3))
     a = rgba[..., 3:4]
@@ -45,8 +47,8 @@ def png_bytes(img):
             + chunk(b"IDAT", zlib.compress(raw, 9)) + chunk(b"IEND", b""))
 
 
-def write_ico(path, sizes=(16, 20, 24, 32, 40, 48, 64, 128, 256)):
-    pngs = [png_bytes(render(s)) for s in sizes]
+def write_ico(path, sizes=(16, 20, 24, 32, 40, 48, 64, 128, 256), off=False):
+    pngs = [png_bytes(render(s, off=off)) for s in sizes]
     out = struct.pack("<HHH", 0, 1, len(sizes))
     offset = 6 + 16 * len(sizes)
     for s, data in zip(sizes, pngs):
@@ -58,6 +60,7 @@ def write_ico(path, sizes=(16, 20, 24, 32, 40, 48, 64, 128, 256)):
 
 if __name__ == "__main__":
     write_ico(os.path.join(ROOT, "tuner.ico"))
+    write_ico(os.path.join(ROOT, "tuner_off.ico"), (16, 20, 24, 32, 40, 48, 64), off=True)  # EQ 關掉時的右下角小圖示
     with open(os.path.join(HERE, "tuner.png"), "wb") as f:
         f.write(png_bytes(render(256)))
     print("ok")
