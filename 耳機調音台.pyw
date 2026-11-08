@@ -2738,6 +2738,9 @@ class Tray:
         self.hwnd, self.icons, self.off, self.eq = None, [None, None], False, True
         self.tip, self.ok, self.guid, self.created = "耳機調音台", False, True, 0
         self.lock = threading.Lock()
+        if __name__ != "__main__":  # 被別的程式載入（測試）：不放小圖示——同一個身分會把正在用的調音台的圖示擠掉
+            return
+        self.guid = "--config-dir" not in sys.argv  # 測試用的第二個調音台不用固定身分，一樣不會擠掉正在用的那個
         try:
             self.u, self.sh, self.k = _tray_api()
         except (AttributeError, OSError):
