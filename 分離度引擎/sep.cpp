@@ -53,6 +53,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <cwchar>
 #include <vector>
 #define NOMINMAX
 #define WIN32_LEAN_AND_MEAN
@@ -390,6 +391,7 @@ struct Sep {
     std::atomic<int> vnh{7};        // 時間中值用幾格
     std::atomic<float> ai{0.0f};    // 人聲大小用 AI（mode 6）
     std::atomic<float> dly{0.0f};   // 整條多晚幾秒（等 AI；0＝不等）
+    std::atomic<bool> ailoc{false};  // 測試用：共用記憶體用 Local（一般程式裡）
     HANDLE aiMap = nullptr;
     volatile int64_t* aiH = nullptr;  // 共用記憶體的欄位
     float *aiIn = nullptr, *aiOut = nullptr;
@@ -449,6 +451,17 @@ struct Sep {
             return;
         }
         if (!aiH) {
+            // 只有 Windows 的音效程序（audiodg）裡的外掛才建共用記憶體：Equalizer APO 的檢查工具、編輯器也會載入外掛，
+            // 以前它們建了一份（一般程式只能建 Local）→ AI 程式接到那份、一直等不到真的聲音（調音台顯示「啟動中」）
+            static int inDg = -1;
+            if (inDg < 0) {
+                wchar_t exe[MAX_PATH] = {0};
+                GetModuleFileNameW(nullptr, exe, MAX_PATH);
+                size_t len = std::wcslen(exe);
+                inDg = len >= 11 && _wcsicmp(exe + len - 11, L"audiodg.exe") == 0;
+            }
+            bool loc = ailoc.load();  // 測試用：在一般程式裡用 Local
+            if (!inDg && !loc) return;
             size_t size = kAiHdr + (size_t)kAiCapMax * 4 * sizeof(float);
             SECURITY_ATTRIBUTES sa{sizeof sa, nullptr, FALSE};
             PSECURITY_DESCRIPTOR sd = nullptr;  // 誰都能讀寫（外掛在系統的音效程序裡、AI 程式是使用者的）
@@ -456,8 +469,7 @@ struct Sep {
                                                                      nullptr))
                 sa.lpSecurityDescriptor = sd;
             DWORD hi = (DWORD)((uint64_t)size >> 32), lo = (DWORD)size;
-            HANDLE h = CreateFileMappingW(INVALID_HANDLE_VALUE, &sa, PAGE_READWRITE, hi, lo, kAiName);
-            if (!h) h = CreateFileMappingW(INVALID_HANDLE_VALUE, &sa, PAGE_READWRITE, hi, lo, kAiNameLocal);
+            HANDLE h = CreateFileMappingW(INVALID_HANDLE_VALUE, &sa, PAGE_READWRITE, hi, lo, loc ? kAiNameLocal : kAiName);
             if (sd) LocalFree(sd);
             if (!h) return;
             void* v = MapViewOfFile(h, FILE_MAP_ALL_ACCESS, 0, 0, size);
@@ -1112,6 +1124,7 @@ static intptr_t dispatcher(AEffect* e, int32_t op, int32_t index, intptr_t value
         }
         if ((p = findKey(b, "ai="))) s->ai.store((float)std::min(1.0, std::max(0.0, std::atof(p))));
         if ((p = findKey(b, "dly="))) s->dly.store((float)std::min(5.0, std::max(0.0, std::atof(p))));
+        if ((p = findKey(b, "ailoc="))) s->ailoc.store(std::atoi(p) != 0);
         s->fx.initialDelay = s->mode.load() == 3 ? s->dyn.D : s->N - 1;
         if (s->fs > 0) s->aiSetup();
         return 1;
