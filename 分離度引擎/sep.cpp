@@ -54,6 +54,11 @@
 #include <cstdlib>
 #include <cstring>
 #include <vector>
+#define NOMINMAX
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+#include <sddl.h>
+#pragma comment(lib, "advapi32.lib")
 
 typedef std::complex<double> cd;
 typedef std::complex<float> cf;
@@ -134,6 +139,23 @@ const double kEarSmoothSec = 0.05;
 // 維納濾波只看平均（人聲唱的時候吉他的「中」有一部分跟著被拿進耳朵裡）→ 用約 8 ms 的中、側能量：
 // 拿的量 ×(1 − 側/中)（只在左右真的一樣的瞬間拿；偏一邊的樂器前面已經扣乾淨，不受影響）。實測吉他漏進耳朵 14% → 12%
 const double kMsSec = 0.008;
+// 人聲大小（voc＞0：調音台「人聲大小」那一份 mode 6）：「正中間的聲音」不等於人聲——正中間還有貝斯、大鼓、小鼓、鈸，
+// 以前一起被當成人聲（去人聲連貝斯、大鼓一起拿掉，只聽人聲裡一直有鼓）。
+// ① 頻段：人聲的基音約 100 Hz 以上、齒音到約 9 kHz（Audacity 的人聲分離預設也是 120 Hz–9 kHz）→ 這以外不拿
+// ② 鼓：打擊聲在頻率上是平的一片、時間上很短；人聲是一條一條的泛音、時間上連續 → 中值濾波分開（Fitzgerald 2010 HPSS）：
+//    時間中值 H（只用這一格和之前的幾格，不加延遲）、頻率中值 P，拿 H²/(H²＋P²)
+const int kVocNhMax = 15;
+// AI 人聲（mode 6、ai＝1、dly＝秒；公開版的調音台還沒用到）：本機另外跑的 AI 程式（例如 BS-RoFormer、用顯示卡）分得準很多，但要看到
+// 前後幾秒才分得好 → 外掛把原音寫進共用記憶體、AI 程式每秒算一次寫回人聲；這一路（和調音台用 Delay 補的 L R）整條
+// 多晚 dly 秒。AI 程式沒開、來不及、或還沒寫到 → 用上面的 DSP 人聲（也晚 dly 秒，時間一樣對齊），切換時 20 ms 淡入淡出
+// 共用記憶體（Global\HPTunerVoxAI，int64 欄位）：0 魔術字、1 版本代號 gen、2 現在寫的外掛 owner、3 取樣率（double）、
+// 4 環的長度 cap、5 輸出比輸入晚幾個樣本 delay、6 已寫進的原音 inW、7 AI 寫好的人聲從哪裡開始 outStart、8 寫到哪裡 outW、
+// 9 AI 程式的心跳（GetTickCount64）；256 位元組之後：原音環 float[cap][2]、人聲環 float[cap][2]（位置＝從頭算第幾個樣本）
+const wchar_t* const kAiName = L"Global\\HPTunerVoxAI";
+const wchar_t* const kAiNameLocal = L"Local\\HPTunerVoxAI";  // 測試用（一般程式建不了 Global）
+const int64_t kAiCapMax = (int64_t)1 << 22;                  // 384 kHz 也有約 10 秒
+const size_t kAiHdr = 256;
+const double kAiRingSec = 8.0, kAiFadeSec = 0.02;
 
 // ---------------------------------------------------------------- 動態處理（mode=3）
 struct Biquad {  // 轉置直接二型，每個聲道各自的狀態
@@ -363,6 +385,18 @@ struct Sep {
     std::atomic<float> post{1.0f};  // 貼耳「這一瞬間」檢查的強度（0＝不檢查）
     std::atomic<int> rx{2};         // 貼耳：不進房間的範圍（0＝只有送進耳朵的、1＝認出來的人聲、2＝有人聲的格照比例）
     std::atomic<float> rxg{2.0f};   // rx＝2 的倍數
+    std::atomic<float> voc{0.0f};   // 人聲大小：mode 6 只拿人聲（頻段＋濾掉鼓），0＝正中間的聲音全拿（聽喇叭的貼耳）
+    std::atomic<float> vph{1.0f}, vwh{300.0f}, vlo{220.0f}, vhi{8000.0f};  // 濾鼓的量、頻率中值寬度（Hz）、頻段（全拿的範圍）
+    std::atomic<int> vnh{7};        // 時間中值用幾格
+    std::atomic<float> ai{0.0f};    // 人聲大小用 AI（mode 6）
+    std::atomic<float> dly{0.0f};   // 整條多晚幾秒（等 AI；0＝不等）
+    HANDLE aiMap = nullptr;
+    volatile int64_t* aiH = nullptr;  // 共用記憶體的欄位
+    float *aiIn = nullptr, *aiOut = nullptr;
+    int64_t aiId = 0, aiPos = 0, aiCap = 0, aiDelay = 0;
+    std::vector<float> dlL, dlR;      // DSP 人聲延遲 dly 秒
+    int dlLen = 0, dlPos = 0;
+    double aiMix = 0;
     char chunk[512];
     char path[400] = {0};           // 直接擺位的頭部量測表
     std::atomic<Table*> tab{nullptr};
@@ -380,13 +414,78 @@ struct Sep {
     std::vector<cd> flr;
     std::vector<double> fmm, fss;  // 貼耳用的「這一瞬間」中、側能量
     std::vector<int> hw;  // 每個頻率格往左右各平均幾格（約 1 ERB）
+    std::vector<float> vhis, vmag, vtmp;  // 人聲大小：每格最近幾格的大小（環狀）、這一格的大小、算中值用
+    std::vector<double> vbw;              // 人聲大小的頻段權重
+    double vbwLo = -1, vbwHi = -1;
+    int vpos = 0;
     int kTop = 0;
     double alpha = 0;
     int qn = 0, qr = 0;  // 輸出佇列（已完成的樣本數、讀取位置）
 
     ~Sep() {
+        aiClose();
         delete tab.load();
         for (Table* t : oldTabs) delete t;
+    }
+
+    void aiClose() {
+        if (aiH && aiH[2] == aiId) aiH[2] = 0;  // 不再寫 → AI 程式閒著
+        if (aiH) UnmapViewOfFile((void*)aiH);
+        if (aiMap) CloseHandle(aiMap);
+        aiH = nullptr, aiMap = nullptr, aiIn = aiOut = nullptr;
+    }
+
+    // AI 人聲：延遲線、共用記憶體（setup、換參數時呼叫，不在即時的執行緒裡）
+    void aiSetup() {
+        int want = (fs > 0 && mode.load() == 6 && dly.load() > 0) ? (int)std::lround(dly.load() * fs) : 0;
+        if (want != dlLen) {
+            dlL.assign(std::max(want, 1), 0.0f);
+            dlR.assign(std::max(want, 1), 0.0f);
+            dlLen = want, dlPos = 0;
+        }
+        fx.initialDelay = mode.load() == 3 ? dyn.D : N - 1 + dlLen;
+        if (!(dlLen > 0 && ai.load() > 0)) {
+            aiClose();
+            return;
+        }
+        if (!aiH) {
+            size_t size = kAiHdr + (size_t)kAiCapMax * 4 * sizeof(float);
+            SECURITY_ATTRIBUTES sa{sizeof sa, nullptr, FALSE};
+            PSECURITY_DESCRIPTOR sd = nullptr;  // 誰都能讀寫（外掛在系統的音效程序裡、AI 程式是使用者的）
+            if (ConvertStringSecurityDescriptorToSecurityDescriptorW(L"D:(A;;GA;;;WD)S:(ML;;NW;;;LW)", SDDL_REVISION_1, &sd,
+                                                                     nullptr))
+                sa.lpSecurityDescriptor = sd;
+            DWORD hi = (DWORD)((uint64_t)size >> 32), lo = (DWORD)size;
+            HANDLE h = CreateFileMappingW(INVALID_HANDLE_VALUE, &sa, PAGE_READWRITE, hi, lo, kAiName);
+            if (!h) h = CreateFileMappingW(INVALID_HANDLE_VALUE, &sa, PAGE_READWRITE, hi, lo, kAiNameLocal);
+            if (sd) LocalFree(sd);
+            if (!h) return;
+            void* v = MapViewOfFile(h, FILE_MAP_ALL_ACCESS, 0, 0, size);
+            if (!v) {
+                CloseHandle(h);
+                return;
+            }
+            aiMap = h;
+            aiH = (volatile int64_t*)v;
+            aiIn = (float*)((char*)v + kAiHdr);
+            aiOut = aiIn + kAiCapMax * 2;
+        }
+        int64_t cap = 1;
+        while (cap < (int64_t)(kAiRingSec * fs)) cap <<= 1;
+        aiCap = std::min(cap, kAiCapMax);
+        aiDelay = N - 1 + dlLen;
+        LARGE_INTEGER qpc;
+        QueryPerformanceCounter(&qpc);
+        aiId = (int64_t)((uint64_t)qpc.QuadPart ^ ((uint64_t)(uintptr_t)this << 16)) | 1;
+        aiPos = 0, aiMix = 0;
+        aiH[2] = 0;  // 先停（改欄位時 AI 程式不要讀到一半）
+        std::memcpy((void*)aiH, "HVA1", 4);
+        double f = fs;
+        std::memcpy((void*)(aiH + 3), &f, 8);
+        aiH[4] = aiCap, aiH[5] = aiDelay, aiH[6] = 0, aiH[7] = 0, aiH[8] = 0;
+        MemoryBarrier();
+        aiH[1] = aiH[1] + 1;
+        aiH[2] = aiId;
     }
 
     void setup(double rate) {
@@ -430,6 +529,12 @@ struct Sep {
         itdw.assign(K, 0);
         decor.assign(K, cd(1, 0));
         hw.assign(K, 0);
+        vhis.assign((size_t)K * kVocNhMax, 0.0f);
+        vmag.assign(K, 0.0f);
+        vtmp.assign(K, 0.0f);
+        vbw.assign(K, 0.0);
+        vbwLo = vbwHi = -1;
+        vpos = 0;
         kTop = std::min(K - 2, (int)(kTopHz * N / fs));
         for (int k = 0; k < K; k++) {
             double f = k * fs / N;
@@ -450,6 +555,8 @@ struct Sep {
         dyn.setup(fs);
         fx.initialDelay = mode.load() == 3 ? dyn.D : N - 1;  // 同一個呼叫裡收滿 H 個就輸出 → 實際延遲 N−1 個樣本（動態處理：先看的 2 ms）
         loadTable();
+        dlLen = -1;  // 取樣率變了：延遲線、共用記憶體重來
+        aiSetup();
     }
 
     void loadTable() {  // 表的取樣率、窗長要跟現在的一樣，不然不用（直接擺位改成一般的喇叭訊號）
@@ -611,6 +718,44 @@ struct Sep {
             *gp = 1.0;
         }
         return sh;
+    }
+
+    // 人聲大小：mode 6 分出來的「正中間的聲音」（左＝右）只留人聲——頻段以外不拿、鼓（頻率上平、時間上短）濾掉
+    void vocShape(int K, double vc) {
+        double lo = vlo.load(), hi = vhi.load();
+        if (lo != vbwLo || hi != vbwHi) {  // 頻段權重：lo／2 以下、hi×1.6 以上不拿（中間在對數頻率上 sin² 過渡）
+            vbwLo = lo, vbwHi = hi;
+            for (int k = 0; k < K; k++) {
+                double f = std::max(k * fs / N, 1e-9);
+                double a = clampd(std::log(f / (0.5 * lo)) / std::log(2.0), 0, 1);
+                double b = clampd(std::log(f / hi) / std::log(1.6), 0, 1);
+                vbw[k] = std::sin(kPi / 2 * a) * std::sin(kPi / 2 * a) * std::cos(kPi / 2 * b) * std::cos(kPi / 2 * b);
+            }
+        }
+        int nh = std::max(1, std::min(kVocNhMax, vnh.load()));
+        int wb = std::max(1, std::min(64, (int)std::lround(vwh.load() * N / fs)));
+        double d = clampd(vph.load(), 0, 1) * std::min(1.0, vc);
+        vpos = (vpos + 1) % kVocNhMax;
+        for (int k = 0; k < K; k++) {
+            vmag[k] = (float)std::abs(L[k]);
+            vhis[(size_t)k * kVocNhMax + vpos] = vmag[k];
+        }
+        float hb[kVocNhMax];
+        for (int k = 1; k <= kTop; k++) {
+            double g = vbw[k];
+            if (g > 0 && d > 0 && vmag[k] > 0) {
+                for (int i = 0; i < nh; i++) hb[i] = vhis[(size_t)k * kVocNhMax + (vpos - i + kVocNhMax) % kVocNhMax];
+                std::nth_element(hb, hb + nh / 2, hb + nh);
+                double h = std::min((double)hb[nh / 2], (double)vmag[k]);  // 只看過去：正在變小的聲音不能比現在大
+                int j0 = std::max(1, k - wb), j1 = std::min(kTop, k + wb), m = 0;
+                for (int j = j0; j <= j1; j++) vtmp[m++] = vmag[j];
+                std::nth_element(vtmp.begin(), vtmp.begin() + m / 2, vtmp.begin() + m);
+                double p = vtmp[m / 2];
+                g *= 1 - d + d * h * h / (h * h + p * p + 1e-30);
+            }
+            L[k] *= g;
+            R[k] *= g;
+        }
     }
 
     void frame() {
@@ -804,6 +949,7 @@ struct Sep {
                 }
             }
         }
+        if (md == 6 && voc.load() > 0) vocShape(K, voc.load());
         for (int k = 0; k < K; k++) {  // 組回 L + iR 的頻譜 → 逆轉換的實部＝左、虛部＝右
             Y[k] = L[k] + cd(0, 1) * R[k];
             if (k > 0 && k < N / 2) Y[N - k] = std::conj(L[k]) + cd(0, 1) * std::conj(R[k]);
@@ -832,7 +978,18 @@ struct Sep {
                 if (outputs[c] != inputs[c]) std::memcpy(outputs[c], inputs[c], sizeof(float) * n);
             return;
         }
+        bool aiOn = dlLen > 0, own = false, live = false;
+        int64_t s0 = 0, s1 = 0, mask = aiCap - 1;
+        if (aiOn && aiH) {
+            own = aiH[2] == aiId;  // 有更新的外掛接手了 → 這個只用 DSP
+            s1 = aiH[8];
+            MemoryBarrier();
+            s0 = aiH[7];
+            live = own && (int64_t)GetTickCount64() - aiH[9] < 1500;
+        }
+        double fstep = 1.0 / (kAiFadeSec * fs);
         for (int i = 0; i < n; i++) {
+            float x0 = inputs[0][i], x1 = inputs[1][i];  // 輸出可能跟輸入同一塊記憶體：先拿
             for (int c = 0; c < 2; c++) in[c][N - H + fresh] = inputs[c][i];
             if (++fresh == H) {
                 frame();
@@ -846,11 +1003,41 @@ struct Sep {
                 qr = (qr + 1) % (2 * N);
                 qn--;
             }
+            if (aiOn) {  // DSP 人聲晚 dly 秒；AI 寫好了就換成 AI 的
+                float d0 = dlL[dlPos], d1 = dlR[dlPos];
+                dlL[dlPos] = o[0], dlR[dlPos] = o[1];
+                if (++dlPos >= dlLen) dlPos = 0;
+                o[0] = d0, o[1] = d1;
+                if (own) {
+                    int64_t w = aiPos & mask, p = aiPos - aiDelay;
+                    aiIn[2 * w] = x0, aiIn[2 * w + 1] = x1;
+                    if (live && p >= s0 && p < s1 && p > s1 - aiCap) {
+                        aiMix = std::min(1.0, aiMix + fstep);
+                        int64_t r = p & mask;
+                        o[0] = (float)(aiMix * aiOut[2 * r] + (1 - aiMix) * d0);
+                        o[1] = (float)(aiMix * aiOut[2 * r + 1] + (1 - aiMix) * d1);
+                    } else {
+                        aiMix = 0;
+                    }
+                    aiPos++;
+                }
+            }
             outputs[0][i] = o[0];
             outputs[1][i] = o[1];
         }
+        if (own) {
+            MemoryBarrier();
+            aiH[6] = aiPos;
+        }
     }
 };
+
+// 參數 k（例如 "ai="）只在開頭或分號後才算（"ai=" 也可能出現在別的字裡）
+static const char* findKey(const char* b, const char* k) {
+    for (const char* q = std::strstr(b, k); q; q = std::strstr(q + 1, k))
+        if (q == b || q[-1] == ';') return q + std::strlen(k);
+    return nullptr;
+}
 
 static void setText(void* ptr, const char* s, size_t cap) {
     if (!ptr) return;
@@ -899,6 +1086,12 @@ static intptr_t dispatcher(AEffect* e, int32_t op, int32_t index, intptr_t value
         if ((p = std::strstr(b, "post="))) s->post.store((float)std::min(2.0, std::max(0.0, std::atof(p + 5))));
         if ((p = std::strstr(b, "rx="))) s->rx.store(std::min(2, std::max(0, std::atoi(p + 3))));
         if ((p = std::strstr(b, "rxg="))) s->rxg.store((float)std::min(4.0, std::max(0.5, std::atof(p + 4))));
+        if ((p = std::strstr(b, "voc="))) s->voc.store((float)std::min(1.0, std::max(0.0, std::atof(p + 4))));
+        if ((p = std::strstr(b, "vph="))) s->vph.store((float)std::min(1.0, std::max(0.0, std::atof(p + 4))));
+        if ((p = std::strstr(b, "vwh="))) s->vwh.store((float)std::min(1500.0, std::max(50.0, std::atof(p + 4))));
+        if ((p = std::strstr(b, "vlo="))) s->vlo.store((float)std::min(400.0, std::max(40.0, std::atof(p + 4))));
+        if ((p = std::strstr(b, "vhi="))) s->vhi.store((float)std::min(16000.0, std::max(3000.0, std::atof(p + 4))));
+        if ((p = std::strstr(b, "vnh="))) s->vnh.store(std::min(kVocNhMax, std::max(1, std::atoi(p + 4))));
         for (const char* q = std::strstr(b, "ear="); q; q = std::strstr(q + 1, "ear="))  // 要在開頭或分號後（near= 裡也有）
             if (q == b || q[-1] == ';') {
                 s->ear.store((float)std::min(1.0, std::max(0.0, std::atof(q + 4))));
@@ -917,7 +1110,10 @@ static intptr_t dispatcher(AEffect* e, int32_t op, int32_t index, intptr_t value
             s->path[n] = 0;
             s->loadTable();
         }
+        if ((p = findKey(b, "ai="))) s->ai.store((float)std::min(1.0, std::max(0.0, std::atof(p))));
+        if ((p = findKey(b, "dly="))) s->dly.store((float)std::min(5.0, std::max(0.0, std::atof(p))));
         s->fx.initialDelay = s->mode.load() == 3 ? s->dyn.D : s->N - 1;
+        if (s->fs > 0) s->aiSetup();
         return 1;
     }
     case effCanBeAutomated:

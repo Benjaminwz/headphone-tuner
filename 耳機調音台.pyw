@@ -727,7 +727,7 @@ def vox_lines(cfg_dir, name, vg, sep):
     def vst(text):
         return f'VSTPlugin: Library "{lib}" ChunkData "{base64.b64encode(text.encode()).decode()}"'
     mix = "Copy: L=VL R=VR" if vg < 0 else f"Copy: L=L+{vg - 1:.4f}*VL R=R+{vg - 1:.4f}*VR"  # 負號要寫成 +-0.5*VL
-    return (["Copy: VL=L VR=R", "Channel: VL VR", vst("strength=0.000;mode=6;ear=1.000"), "Channel: L R"]
+    return (["Copy: VL=L VR=R", "Channel: VL VR", vst("strength=0.000;mode=6;ear=1.000;voc=1"), "Channel: L R"]
             + (sep or [vst("strength=0.000")]) + ["Channel: all", mix])
 SUR_DELAY = 0.010
 SUR_MARGIN = 1.0
@@ -3028,6 +3028,33 @@ class Slider(tk.Canvas):
                          outline=ACCENT, width=self.app.px(2))
 
 
+class Seg(tk.Frame):
+    """並排的選擇按鈕（取代「點一下換下一個」）：選中的金框。small＝放在小字那一行的小號"""
+
+    def __init__(self, master, app, var, options, on_change, size=8, small=False):
+        super().__init__(master, bg=master["bg"])
+        self.var, self.vals, self.on_change, self.pills = var, [v for v, _t in options], on_change, []
+        for v, text in options:
+            p = Pill(self, app, text, lambda v=v: self.pick(v), size=size)
+            p.config(padx=app.px(3 if small else 4) - 1, pady=0 if small else app.px(2) - 1)
+            p.pack(side="left", padx=(0, app.px(3)))
+            self.pills.append(p)
+        tid = var.trace_add("write", lambda *_: self.paint())
+        self.bind("<Destroy>", lambda _e: var.trace_remove("write", tid))  # 畫面重建時舊的按鈕不再收更新
+        self.paint()
+
+    def pick(self, v):
+        if v != self.var.get():
+            self.var.set(v)
+        self.on_change()
+
+    def paint(self):
+        cur = self.var.get()
+        best = min(range(len(self.vals)), key=lambda i: abs(self.vals[i] - cur))
+        for i, p in enumerate(self.pills):
+            p.set_selected(i == best)
+
+
 class Toggle(tk.Canvas):
     """開關：橘色＝開"""
 
@@ -3366,32 +3393,33 @@ class App:
 
         # 右：空間感與平衡
         c = self.card(right, "空間感與平衡")
-        self.sep_pill = Pill(c.winfo_children()[0], self, "", self.cycle_sep, size=9)
-        self.sep_pill.pack(side="left", padx=(px(10), 0))
-        self.paint_sep()
+        top = c.winfo_children()[0]  # 標題旁：分離度（直接點 關／輕／中／強／超強）
+        self.label(top, "分離度", 9, SUB).pack(side="left", padx=(px(12), px(4)))
+        Seg(top, self, self.sep_level, [(i, lv[0]) for i, lv in enumerate(SEP_LEVELS)], self.sep_changed).pack(side="left")
         g = tk.Frame(c, bg=PANEL)
         g.pack(fill="x")
         self.width_lbl = self.slider_row(g, 0, "聲場寬度", "左右拉開", self.width, 0, 40, 5, 180)
-        self.sur_lbl = g.grid_slaves(row=0, column=0)[0].winfo_children()[1]  # 小字加上「環繞」，點一下切換
-        self.sur_lbl.config(cursor="hand2")
-        self.sur_lbl.bind("<Button-1>", lambda _e: self.cycle_sur())
-        self.paint_sur()
+        Seg(self.mini_row(g, 0, "環繞"), self, self.sur_level, [(i, lv[0]) for i, lv in enumerate(SUR_LEVELS)],
+            self.sur_changed, size=7, small=True).pack(side="left")
         self.cf_lbl = self.slider_row(g, 1, "交叉饋送", "最右＝虛擬喇叭", self.crossfeed, 0, 4, 1, 180, num=False)
         self.head_lbl = g.grid_slaves(row=1, column=0)[0].winfo_children()[1]  # 小字加上「頭型」，點一下挑
         self.head_lbl.config(cursor="hand2")
         self.head_lbl.bind("<Button-1>", lambda _e: self.head_menu())
         self.paint_head()
         self.bal_lbl = self.slider_row(g, 2, "左右平衡", "補償左右耳", self.balance, -3, 3, 0.5, 180, num=False)
-        self.vox_lbl = g.grid_slaves(row=2, column=0)[0].winfo_children()[1]  # 小字加上「人聲」，點一下切換
-        self.vox_lbl.config(cursor="hand2")
-        self.vox_lbl.bind("<Button-1>", lambda _e: self.cycle_vox())
-        self.paint_vox()
         self.room_lbl = self.slider_row(g, 3, "殘響空間", "錄音室／音樂廳", self.room, 0, 3, 1, 180, num=False)
         self.room_lbl.config(width=10)
         self.spk_lbl = g.grid_slaves(row=3, column=0)[0].winfo_children()[1]  # 小字改成「喇叭」：聽喇叭模式
         self.spk_lbl.config(cursor="hand2")
         self.spk_lbl.bind("<Button-1>", lambda _e: self.spk_menu())
         self.paint_spk()
+        # 人聲大小：直接點（耳機、聽喇叭都能用）
+        lab = tk.Frame(g, bg=PANEL)
+        lab.grid(row=4, column=0, sticky="w", pady=px(3))
+        self.label(lab, "人聲", 10, bold=True).pack(anchor="w")
+        self.label(lab, "大小", 8, SUB).pack(anchor="w")
+        Seg(g, self, self.vox_level, [(i, vl[0]) for i, vl in enumerate(VOX_LEVELS)],
+            self.vox_changed).grid(row=4, column=1, columnspan=2, sticky="w", padx=px(10))
         g.columnconfigure(1, weight=1)
         row = tk.Frame(c, bg=PANEL)
         row.pack(fill="x", pady=(px(8), 0))
@@ -3852,13 +3880,35 @@ class App:
             self.style_name.config(text="自訂調音")
             self.style_plain.config(text="跟內建風格都不一樣，喜歡可以存到「我的預設」")
 
+    def mini_row(self, g, row, prefix):
+        """把某一列的小字換成「前綴＋一排小按鈕」（回傳放按鈕的框）"""
+        lab = g.grid_slaves(row=row, column=0)[0]
+        lab.winfo_children()[1].pack_forget()
+        f = tk.Frame(lab, bg=PANEL)
+        f.pack(anchor="w")
+        self.label(f, prefix, 8, SUB).pack(side="left", padx=(0, self.px(4)))
+        return f
+
+    def user_changed(self):
+        """改了設定：EQ 關著就先打開（不然改了聽不出差別），再套用"""
+        self.need_eq()
+        self.changed()
+
+    def need_eq(self):
+        if self.enabled.get() or self.passthrough.get():
+            return False
+        self.enabled.set(True)
+        self.toast("EQ 原本關著（原音），已經幫你打開", 2500)
+        return True
+
     def slider_row(self, g, row, name, hint, var, lo, hi, step, length, num=True):
         px = self.px
         lab = tk.Frame(g, bg=PANEL)
         lab.grid(row=row, column=0, sticky="w", pady=px(3))
         self.label(lab, name, 10, bold=True).pack(anchor="w")
         self.label(lab, hint, 8, SUB).pack(anchor="w")
-        Slider(g, self, var, lo, hi, step, length, self.changed).grid(row=row, column=1, sticky="ew", padx=px(10))
+        Slider(g, self, var, lo, hi, step, length, self.user_changed).grid(row=row, column=1, sticky="ew",
+                                                                          padx=px(10))
         v = self.label(g, "", 10, VALUE, font=NUM if num else None, width=7, anchor="e")
         v.grid(row=row, column=2)
         return v
@@ -4438,36 +4488,31 @@ class App:
     # ---------- 快捷鍵 ----------
     # ---------- 分離度 ----------
     def paint_sep(self):
-        lv = int(self.sep_level.get())
-        self.sep_pill.config(text=f"分離度：{SEP_LEVELS[lv][0]}")
-        self.sep_pill.set_selected(lv > 0)
+        """分離度、環繞、人聲大小的按鈕跟著值自己更新"""
 
     def paint_sur(self):
-        lv = int(self.sur_level.get())
-        self.sur_lbl.config(text=f"左右拉開　環繞：{SUR_LEVELS[lv][0]} ▾", fg=ACCENT if lv else SUB)
-
-    def cycle_sur(self):
-        self.sur_level.set((int(self.sur_level.get()) + 1) % len(SUR_LEVELS))
-        self.paint_sur()
-        self.changed()
-        lv = int(self.sur_level.get())
-        self.toast(f"環繞：{SUR_LEVELS[lv][0]}" + ("（殘響、空間感這些環境音移到身邊兩側後方，樂器和人聲留在前面）" if lv else ""))
+        pass
 
     def paint_vox(self):
-        lv = int(self.vox_level.get())
-        self.vox_lbl.config(text=f"補償左右耳　人聲：{VOX_LEVELS[lv][0]} ▾", fg=ACCENT if lv else SUB)
+        pass
 
-    def cycle_vox(self):
+    def sur_changed(self):
+        opened = self.need_eq()
+        self.changed()
+        lv = int(self.sur_level.get())
+        self.toast(("已打開 EQ　" if opened else "") + f"環繞：{SUR_LEVELS[lv][0]}"
+                   + ("（殘響、空間感這些環境音移到身邊兩側後方，樂器和人聲留在前面）" if lv else ""))
+
+    def vox_changed(self):
         if not DYN_OK:
+            self.vox_level.set(0)
             self.toast("人聲大小要用新版的分離度外掛（重新安裝）")
             return
-        self.vox_level.set((int(self.vox_level.get()) + 1) % len(VOX_LEVELS))
-        self.paint_vox()
+        opened = self.need_eq()
         self.changed()
         lv = int(self.vox_level.get())
-        self.toast("人聲：" + VOX_LEVELS[lv][0] + ("", "（正中間的人聲 +3 dB：看電影的對白、小聲聽歌比較清楚）",
-                                                  "（正中間的人聲 −6 dB）", "（伴唱：人聲跟樂器混在一起的地方會留一點）",
-                                                  "（聽寫歌詞、練唱：樂器會漏一點）")[lv])
+        self.toast(("已打開 EQ　" if opened else "") + "人聲：" + VOX_LEVELS[lv][0]
+                   + ("", "（+3 dB：看電影的對白、小聲聽歌比較清楚）", "（−6 dB）", "（伴唱）", "（聽寫歌詞、練唱）")[lv])
 
     def layout(self):
         """現在的排布 (代號, 名稱, 集中, 近 dB, 寬, 說明, 貼耳)：跟著風格（最後按的那個風格），或固定標準"""
@@ -4478,10 +4523,12 @@ class App:
                 key = style_layout(STYLES[idx][0])
         return (key,) + LAYOUTS[key]
 
-    def cycle_sep(self):
-        self.sep_level.set((int(self.sep_level.get()) + 1) % len(SEP_LEVELS))
-        self.paint_sep()
+    def sep_changed(self):
+        opened = self.need_eq()
         self.changed()
+        lv = int(self.sep_level.get())
+        self.toast(("已打開 EQ　" if opened else "") + f"分離度：{SEP_LEVELS[lv][0]}"
+                   + ("（每個樂器往左右拉開，人聲留中間；所有風格都套用）" if lv else ""))
 
     # ---------- 多源共識（背景下載所有量測、擬合）----------
     def start_consensus(self, name, entries=None):
