@@ -672,8 +672,8 @@ def spk_files(cfg_dir, key="studio_spk"):
 # 人聲、正中間和最左右的不動，環境音、殘響不動。第 2 版：位置估計在頻率方向平均約半個聽覺頻帶、時間 50 ms
 # → 推的量不再一格一格跳（第 1 版的顆粒感）。延遲約 23 ms；強度 0 跟原音逐位元一樣
 SEP_DLL = os.path.join(APP_DIR, "分離度引擎", "sep_v1.dll")
-SEP_LEVELS = [("關", 0.0), ("輕", 0.35), ("中", 0.6), ("強", 0.9)]
-SEP_MARGIN = 1.0  # 拉開時峰值最多多約 0.2 dB，多留一點
+SEP_LEVELS = [("關", 0.0), ("輕", 0.35), ("中", 0.6), ("強", 0.9), ("超強", 1.35)]
+SEP_MARGIN = 1.0  # 拉開時峰值最多多約 0.2 dB，多留一點（超強再多留 0.5）
 
 
 def sep_file(cfg_dir):
@@ -712,6 +712,23 @@ def sep_lines(cfg_dir, name, strength, sur=0.0):
 # （tools/殘響模擬.py 的 studio_sur：經過頭部量測的直達聲＋房間反射，每個頭型一份）；比前方晚 10 ms → 方向由前方決定
 # （優先效應，Dolby Pro Logic 的環繞聲道也是延遲 10–20 ms），環境音被打開到身邊，又不用另外加殘響
 SUR_LEVELS = [("關", 0.0), ("輕", 0.35), ("中", 0.6), ("強", 1.0)]
+# 人聲大小（「左右平衡」底下的小字，點一下換）：分離度外掛的 mode 6 把正中間的人聲分出來（兩聲道維納濾波＋這一瞬間
+# 左右一不一樣的檢查），在最前面加回去或扣掉 → 後面的東西（EQ、虛擬喇叭、交叉饋送）都照常，耳機、聽喇叭都能用。
+# L R 同樣過一次外掛（強度 0＝原音）→ 時間對齊才扣得乾淨；直接擺位時整條多約 21 ms 延遲。
+# 去人聲＝伴唱（人聲少約 6–9 dB）、只聽人聲＝聽寫歌詞、練唱；人聲比樂器小聲、跟樂器混在一起的地方會留一點
+VOX_LEVELS = [("正常", 1.0), ("大一點", 1.41), ("小一點", 0.5), ("去人聲", 0.0), ("只聽人聲", -1.0)]
+VOX_MARGIN = 3.0  # 人聲大一點最多多 3 dB → 防破音多留
+
+
+def vox_lines(cfg_dir, name, vg, sep):
+    """人聲大小：VL VR＝分出來的人聲（mode 6），L R 過分離度（sep）或強度 0 的外掛（延遲一樣），再加減"""
+    lib = os.path.join(cfg_dir, name)
+
+    def vst(text):
+        return f'VSTPlugin: Library "{lib}" ChunkData "{base64.b64encode(text.encode()).decode()}"'
+    mix = "Copy: L=VL R=VR" if vg < 0 else f"Copy: L=L+{vg - 1:.4f}*VL R=R+{vg - 1:.4f}*VR"  # 負號要寫成 +-0.5*VL
+    return (["Copy: VL=L VR=R", "Channel: VL VR", vst("strength=0.000;mode=6;ear=1.000"), "Channel: L R"]
+            + (sep or [vst("strength=0.000")]) + ["Channel: all", mix])
 SUR_DELAY = 0.010
 SUR_MARGIN = 1.0
 _SUR = {}
@@ -838,15 +855,25 @@ def v4_table():
     return _V4T[key]
 
 
+def focus_gain(a, b):
+    """人聲集中：兩耳反射的平均（(a＋b)/2）要乘多少，1/3 八度的能量才跟兩耳平均一樣（人聲的房間聲大小不變）"""
+    import numpy as np
+    return np.clip(smooth_third(np.sqrt((np.abs(a) ** 2 + np.abs(b) ** 2) / 2)) /
+                   np.maximum(smooth_third(np.abs((a + b) / 2)), 1e-12), 0.5, 4)
+
+
+_V4C = {}
+
+
 def v4_parts(key="studio_spk"):
-    """直接擺位要的東西 → (表、兩耳延遲、反射 (n, 4)（時間 0＝正前方到頭中心）、算峰值用的 4 聲道、版本、
-    最後的補償 (頻率, 大小)) 或 None（資料還沒有）。key＝哪間房"""
+    """直接擺位要的東西（跟人聲、排布無關的部分）→ dict：表 M、兩耳延遲 tau、反射 refl (n, 4)（時間 0＝正前方到頭中心）、
+    人聲集中的反射 mid、版本 tag，和算補償、峰值用的頻譜；資料還沒有 → None。key＝哪間房"""
     import numpy as np
     master, tab = room_master(key), v4_table()
     dm = room_master(f"{key}_dir") if key != "studio_spk" else None
     if master is None or tab is None or (key != "studio_spk" and dm is None):
         return None
-    ck = (1, key, master[1], tab[3], dm[1] if dm else "")  # 1＝做法的版本（改了檔名就跟著換）
+    ck = (2, key, master[1], tab[3], dm[1] if dm else "")  # 2＝做法的版本（改了檔名就跟著換）
     if ck not in _V4:
         M, tau, direct, _t = tab
         if dm:  # 這間房自己的直達聲（喇叭的距離、高度不一樣）
@@ -867,53 +894,95 @@ def v4_parts(key="studio_spk"):
         g = np.sin(np.pi / 2 * np.clip(np.log(np.maximum(f, 1.0) / 150) / math.log(250 / 150), 0, 1)) ** 2
         Dc = [g * math.sqrt(2) * at(0, e) + (1 - g) * (at(30, e) + at(-30, e)) for e in (0, 1)]
         R = np.fft.rfft(refl, n, axis=0)
-        E = np.sqrt((np.abs(Dc[0] + R[:, 0] + R[:, 3]) ** 2 + np.abs(Dc[1] + R[:, 1] + R[:, 2]) ** 2) / 2)
-        inv = 1 / np.maximum(smooth_third(E), 1e-9)
-        lo, hi = np.searchsorted(f, 20), np.searchsorted(f, 20000)
-        inv[:lo], inv[hi:] = inv[lo], inv[hi - 1]
-        inv = np.clip(inv, 0.25, 4)
+        rl, rr = R[:, 0] + R[:, 3], R[:, 1] + R[:, 2]  # 正中間的聲音到左耳、右耳的反射
+        # 人聲集中：兩耳都用兩耳的平均（大小照兩耳平均）。只用一隻耳朵那一份的話，人聲有一部分還走一般反射時
+        # （跟樂器混在同一格），那隻耳朵的兩份是同一個反射、同相加起來 → 那一邊比較大聲（實測偏 0.5–1.1 dB）
+        rm = (rl + rr) / 2 * focus_gain(rl, rr)
         m = len(refl)
-        # 算峰值用的兩組 4 聲道（左→左、右→右、左→右、右→左）。左右相同、左右反相：照外掛實際的輸出（正中間的直達聲
-        # 都算在左聲道那一路；150–250 Hz 以下照兩顆喇叭），實測差 0.6 dB 以內。左右不同的樂器：外掛逐格擺位的峰值
-        # 線性模型抓不到（少估到 1.9 dB）→ 用整組虛擬喇叭×補償（實測都比較大）
-        c = minphase(inv)
-        pk = np.stack([c * (g * math.sqrt(2) * at(0, 0) + (1 - g) * at(30, 0) + R[:, 0]),
-                       c * ((1 - g) * at(-30, 1) + R[:, 1]),
-                       c * (g * math.sqrt(2) * at(0, 1) + (1 - g) * at(30, 1) + R[:, 2]),
-                       c * ((1 - g) * at(-30, 0) + R[:, 3])], 1)
-        peak = np.fft.irfft(pk, n, axis=0)[:m], np.fft.irfft(np.fft.rfft(spk, n, axis=0) * c[:, None], n, axis=0)[:m]
         fade = np.cos(np.linspace(0, np.pi / 2, 960))[:, None] ** 2
         refl[-960:] *= fade
-        for x in peak:
-            x[-960:] *= fade
-        # 補償放在最後（直達聲＋反射加完）、每個取樣率各自做：外掛每格約 47 Hz，低頻的細節放不進表裡；
-        # 補償幾乎是一個脈衝，轉取樣率會被切掉一半
-        _V4.clear()
-        _V4[ck] = (M, tau, refl, peak, f"{zlib.crc32(repr(ck).encode()):08x}", (f, inv))
+        _V4.clear()  # 補償只存大小：每個取樣率各自做最小相位（幾乎是一個脈衝，轉取樣率會被切掉一半）
+        _V4C.clear()
+        A, B = np.fft.rfft(refl[:, 0] + refl[:, 3], n), np.fft.rfft(refl[:, 1] + refl[:, 2], n)
+        mid = np.fft.irfft((A + B) / 2 * focus_gain(A, B), n)[:m] / math.sqrt(2)  # 人聲集中那一路（兩耳一樣）
+        _V4[ck] = dict(M=M, tau=tau, refl=refl, mid=mid, tag=f"{zlib.crc32(repr(ck).encode()):08x}", f=f, Dc=Dc,
+                       rl=rl, rr=rr, rm=rm, R0=R, fr=1.0, g=g, Rs=R, spk=np.fft.rfft(spk, n, axis=0), n=n, m=m,
+                       fade=fade, at=[at(a, e) for a in (0, 30, -30) for e in (0, 1)])
     return _V4[ck]
 
 
-def v4_post(parts, rate):
-    """最後的補償（正中間平直）在這個取樣率的脈衝響應"""
+def v4_comp(parts, focus=1.0, ear=0.0):
+    """跟人聲集中、貼耳有關的部分 → ((頻率, 最後的補償大小), 算峰值用的兩組 4 聲道)。
+    補償：人聲走喇叭時＝正中間的聲音（直達聲＋反射）總響應平直。貼耳時人聲不走喇叭（直接給兩耳）→ 改成背景
+    （偏左、偏右各種位置的樂器平均）跟原本的混音一樣大（只對正中間時偏一邊的樂器 1–8 kHz 少 1–2 dB、500 Hz 多約 1 dB）"""
     import numpy as np
-    f, mag = parts[5]
-    m = int(round(len(parts[2]) * rate / MASTER_FS))
+    k = (parts["tag"], round(focus, 3), round(ear, 3))
+    if k not in _V4C:
+        f, Dc, fr, n, m, g, Rs = (parts[x] for x in ("f", "Dc", "fr", "n", "m", "g", "Rs"))
+        rl, rr, rm = parts["rl"], parts["rr"], parts["rm"]
+        E2 = (np.abs(Dc[0] + (1 - focus) * rl + focus * rm) ** 2 +
+              np.abs(Dc[1] + (1 - focus) * rr + focus * rm) ** 2) / 2  # 正中間：直達聲（擺在 0°，低音兩顆喇叭）＋反射
+        if ear > 0:  # 背景：一個聲音放在各個位置（兩耳加起來的能量 ÷ 耳機的），平均
+            M, tau, R0 = parts["M"], parts["tau"], parts["R0"]
+            f8 = np.fft.rfftfreq(8192, 1 / 96000)
+
+            def at(az, e):
+                i = int(round(az - V4_AZ0))
+                return (np.interp(f, f8, M[i, e].real) + 1j * np.interp(f, f8, M[i, e].imag)) * np.exp(-2j * np.pi * f * tau[i, e])
+            sp30 = [(at(30, e), at(-30, e)) for e in (0, 1)]
+            ps = (0.25, 0.5, 0.75, 1.0, -0.25, -0.5, -0.75, -1.0)
+            side = 0.0
+            for pp in ps:
+                gl, gr = math.sqrt((1 + pp) / 2), math.sqrt((1 - pp) / 2)
+                th = math.degrees(math.atan(math.tan(math.radians(30)) * (gl - gr) / (gl + gr)))
+                D = [g * at(th, e) + (1 - g) * (gl * sp30[e][0] + gr * sp30[e][1]) for e in (0, 1)]
+                side = side + np.abs(D[0] + gl * R0[:, 0] + gr * R0[:, 3]) ** 2 + np.abs(D[1] + gr * R0[:, 1] + gl * R0[:, 2]) ** 2
+            E2 = (1 - ear) * E2 + ear * side / len(ps)
+        inv = 1 / np.maximum(smooth_third(np.sqrt(E2)), 1e-9)
+        lo, hi = np.searchsorted(f, 20), np.searchsorted(f, 20000)
+        inv[:lo], inv[hi:] = inv[lo], inv[hi - 1]
+        inv = np.clip(inv, 0.25, 4)
+        # 算峰值用的兩組 4 聲道（左→左、右→右、左→右、右→左）。左右相同、左右反相：照外掛實際的輸出（正中間的直達聲
+        # 都算在左聲道那一路；150–250 Hz 以下照兩顆喇叭），實測差 0.6 dB 以內。左右不同的樂器：外掛逐格擺位的峰值
+        # 線性模型抓不到（少估到 1.9 dB）→ 用整組虛擬喇叭×補償（實測都比較大）
+        cf, c0 = minphase(inv * fr), minphase(inv)
+        a00, a01, a30, a31, am0, am1 = parts["at"]
+        pk = np.stack([cf * (g * math.sqrt(2) * a00 + (1 - g) * a30) + c0 * Rs[:, 0],
+                       cf * (1 - g) * am1 + c0 * Rs[:, 1],
+                       cf * (g * math.sqrt(2) * a01 + (1 - g) * a31) + c0 * Rs[:, 2],
+                       cf * (1 - g) * am0 + c0 * Rs[:, 3]], 1)
+        peak = np.fft.irfft(pk, n, axis=0)[:m], np.fft.irfft(parts["spk"] * c0[:, None], n, axis=0)[:m]
+        for x in peak:
+            x[-960:] *= parts["fade"]
+        if len(_V4C) > 8:
+            _V4C.clear()
+        _V4C[k] = ((f, inv * fr), peak)
+    return _V4C[k]
+
+
+def v4_post(parts, rate, focus=1.0, ear=0.0):
+    """最後的補償在這個取樣率的脈衝響應"""
+    import numpy as np
+    f, mag = v4_comp(parts, focus, ear)[0]
+    m = int(round(len(parts["refl"]) * rate / MASTER_FS))
     n = 1 << (2 * m - 1).bit_length()
     h = np.fft.irfft(minphase(np.interp(np.fft.rfftfreq(n, 1 / rate), f, mag)), n)[:m]
     h[-rate // 100:] *= np.cos(np.linspace(0, np.pi / 2, rate // 100)) ** 2
     return h
 
 
-def v4_files(cfg_dir, key="studio_spk"):
-    """每個取樣率：外掛的頭部量測表、反射摺積檔、最後的補償檔 → {取樣率: (表, 反射檔, 補償檔)}；資料還沒有 → {}"""
+def v4_files(cfg_dir, key="studio_spk", focus=0.0, ear=0.0):
+    """每個取樣率：外掛的頭部量測表、反射摺積檔、最後的補償檔、人聲集中的反射檔 → {取樣率: (表, 反射, 補償, 集中)}；
+    資料還沒有 → {}。補償跟人聲集中、貼耳有關（檔名多一段），其他換排布不用重做"""
     import numpy as np
     parts = v4_parts(key)
     if parts is None:
         return {}
-    M, tau, refl, _pk, tag, _post = parts
+    M, tau, refl, tag, mid = parts["M"], parts["tau"], parts["refl"], parts["tag"], parts["mid"]
+    ctag = f"{tag}_f{round(focus * 100)}e{round(ear * 100)}"
     out = {}
     for rate in RATES:
-        tn, rn, cn = f"sepdir_{tag}_{rate}.bin", f"v4refl_{tag}_{rate}.wav", f"v4comp_{tag}_{rate}.wav"
+        tn, rn, cn = f"sepdir_{tag}_{rate}.bin", f"v4refl_{tag}_{rate}.wav", f"v4comp_{ctag}_{rate}.wav"
         if not os.path.exists(os.path.join(cfg_dir, tn)):
             N, kt = sep_frame(rate)
             x = np.arange(kt) * rate / N / (96000 / 8192)  # 外掛的頻率格 → 表的頻率格（線性內插）
@@ -928,28 +997,47 @@ def v4_files(cfg_dir, key="studio_spk"):
         if not os.path.exists(os.path.join(cfg_dir, rn)):
             write_wav(os.path.join(cfg_dir, rn), _resample(refl, rate), rate)
         if not os.path.exists(os.path.join(cfg_dir, cn)):
-            h = v4_post(parts, rate)
+            h = v4_post(parts, rate, focus, ear)
             write_wav(os.path.join(cfg_dir, cn), np.stack([h, h], 1), rate)
-        out[rate] = (tn, rn, cn)
+        mn = f"v4mid_{tag}_{rate}.wav" if focus else None
+        if mn and not os.path.exists(os.path.join(cfg_dir, mn)):
+            x = _resample(mid[:, None], rate)[:, 0]
+            write_wav(os.path.join(cfg_dir, mn), np.stack([x, x], 1), rate)
+        out[rate] = (tn, rn, cn, mn)
     return out
 
 
-def v4_lines(cfg_dir, name, strength, sur, files):
+def v4_lines(cfg_dir, name, strength, sur, files, focus=0.0, near=1.0, width=1.0, ear=0.0):
     """L R：直接擺位（兩耳直達聲）；PL PR：同一個分解的喇叭訊號 → 摺積反射；SL SR：環境音（環繞開著時）；
-    加起來之後 L R 再過補償"""
+    QL QR（人聲集中）：正中間的聲音 → 兩耳一樣的反射；加起來之後 L R 再過補償。
+    排布：width＝直接擺位的舞台寬度、near＝正中間的聲音的房間反射大小。
+    貼耳（ear）：VL VR＝正中間的聲音原封不動（mode 6），加在補償之後＝跟耳機模式一樣（沒有頭部量測、房間、補償）"""
     lib = os.path.join(cfg_dir, name)
 
     def vst(text):
         return f'VSTPlugin: Library "{lib}" ChunkData "{base64.b64encode(text.encode()).decode()}"'
     out = []
-    for rate, (tn, rn, cn) in sorted(files.items()):
-        out += [f"If: sampleRate == {rate}", "Copy: PL=L PR=R" + (" SL=L SR=R" if sur else ""), "Channel: L R",
-                vst(f"strength={strength:.3f};mode=4;amb={sur:.3f};table={os.path.join(cfg_dir, tn)}"),
-                "Channel: PL PR", vst(f"strength={strength:.3f};mode=1;amb={sur:.3f}")]
+    wd = f";width={width:.3f}" if abs(width - 1) > 1e-3 else ""
+    ea = f";ear={ear:.3f}" if ear > 0 else ""
+    for rate, (tn, rn, cn, mn) in sorted(files.items()):
+        fo = f";focus={focus:.3f}" if mn else ""
+        nr = f";near={near:.3f}" if mn and abs(near - 1) > 1e-3 else ""
+        tb = f";table={os.path.join(cfg_dir, tn)}"
+        out += [f"If: sampleRate == {rate}",
+                "Copy: PL=L PR=R" + (" SL=L SR=R" if sur else "") + (" QL=L QR=R" if mn else "") + (" VL=L VR=R" if ea else ""),
+                "Channel: L R", vst(f"strength={strength:.3f};mode=4;amb={sur:.3f}{wd}{ea}{tb}"),
+                "Channel: PL PR", vst(f"strength={strength:.3f};mode=1;amb={sur:.3f}{fo}{ea}")]
         if sur:
             out += ["Channel: SL SR", vst(f"strength={strength:.3f};mode=2;amb={sur:.3f}")]
-        out += ["Copy: PXL=PL PXR=PR", "Channel: PL PR PXL PXR", f"Convolution: {rn}", "Channel: all",
-                "Copy: L=L+PL+PXR R=R+PR+PXL", "Channel: L R", f"Convolution: {cn}", "Channel: all", "EndIf:"]
+        if mn:
+            out += ["Channel: QL QR", vst(f"strength={strength:.3f};mode=5;amb={sur:.3f}{fo}{nr}{ea}")]
+        if ea:
+            out += ["Channel: VL VR", vst(f"strength={strength:.3f};mode=6;amb={sur:.3f}{ea}{tb}")]
+        out += ["Copy: PXL=PL PXR=PR", "Channel: PL PR PXL PXR", f"Convolution: {rn}", "Channel: all"]
+        if mn:
+            out += ["Channel: QL QR", f"Convolution: {mn}", "Channel: all"]
+        out += ["Copy: L=L+PL+PXR" + ("+QL" if mn else "") + " R=R+PR+PXL" + ("+QR" if mn else ""),
+                "Channel: L R", f"Convolution: {cn}", "Channel: all"] + (["Copy: L=L+VL R=R+VR"] if ea else []) + ["EndIf:"]
     return out
 
 
@@ -961,7 +1049,36 @@ SPK_ROOMS = [("studio", "錄音室"), ("small", "小房間")]
 SPK_ROOM_NOTE = {"studio": "ITU-R BS.1116 標準聆聽室（7×5 m），喇叭在 2.4 m 外：開闊、殘響均勻",
                  "small": "約 3×3.5 m、天花板 2 m 的小房間（有家具，殘響約 0.2 秒、比較乾），喇叭放在書桌上 0.8 m 外、"
                           "稍微抬高對著耳朵：像坐在書桌前聽一對近場喇叭，聲音比較近、比較結實"}
-SPK_USE = {"room": "studio"}
+SPK_USE = {"room": "studio", "voice": "ear", "layout": True}
+# 人聲（「喇叭 ▾」選單，分離度開著＝直接擺位時）：ear＝貼耳（正中間的聲音直接給兩耳，不經過虛擬喇叭、不進房間，
+# 跟關掉喇叭模式一樣；樂器、背景照樣是喇叭和房間）、focus＝集中（房間反射兩耳一樣，不會散開）、natural＝自然
+VOICE_MODES = ("ear", "focus", "natural")
+# 排布（跟著風格換）：不同的音樂，樂器在舞台上的擺法本來就不一樣（錄音、混音的慣例）。外掛只分「正中間」和「偏一邊」、
+# 不分頻率 → 低沉男聲、高音女聲、齒音都一樣處理。(名稱, 集中的量, 正中間的房間反射 dB（負＝比樂團近）, 舞台寬度
+# （直接擺位的角度倍數，喇叭在 ±30°）, 說明, 貼耳的量)
+LAYOUTS = {
+    "std": ("標準", 1.0, 0, 1.00, "照錄音原本的位置", 1.0),
+    "vocal": ("人聲在前", 1.0, -3, 1.10, "主唱在正中間、比樂團近一點；和聲、合成器稍微拉寬", 1.0),
+    "band": ("樂團展開", 1.0, -2, 1.25, "主唱在正中間往前；兩邊的吉他、銅鈸拉到喇叭外側（±37°），厚的編曲比較分得開", 1.0),
+    "beat": ("節拍集中", 1.0, -4, 1.05, "饒舌、大鼓、貝斯集中在正中間、最前面，乾淨有力", 1.0),
+    "wide": ("寬廣", 1.0, -2, 1.35, "大鼓、貝斯、主唱集中在正中間；合成器、音效鋪到喇叭外側（±40°），加寬過的聲音保持寬", 1.0),
+    "small": ("小舞台", 0.6, -1, 1.00, "樂手照錄音的位置站在小舞台上，正中間的樂器保留一點自然的房間聲", 0.7),
+    "stage": ("大舞台", 0.0, 0, 1.35, "樂團展開到 ±40°，像坐在音樂廳；獨唱、獨奏也在廳裡（不貼耳、不集中）", 0.0),
+    "speech": ("說話", 1.0, -6, 0.85, "聲音貼近、乾淨，舞台窄一點：專心聽說話", 1.0),
+    "live": ("現場", 1.0, 0, 1.20, "主唱集中，但保留一點跟舞台的距離；舞台展開一點", 0.5),
+}
+STYLE_LAYOUT = {"超級低音衝擊": "wide", "蒸汽波／City Pop": "vocal", "R&B": "vocal", "嘻哈": "beat", "爵士經典": "small",
+                "電影／遊戲配樂": "stage", "爵士": "small", "古典": "stage", "人聲／Podcast": "speech", "女毒": "vocal",
+                "60 年代搖滾": "std", "現場搖滾": "live", "驚艷試聽": "wide", "音樂廳前排": "stage", "音樂廳中段": "stage",
+                "寬廣舞台": "wide", "分離度拉滿": "wide", "HD 800 S 大空間": "wide"}
+GROUP_LAYOUT = {"搖滾": "band"}  # 沒列在上面的：整組一樣，其他＝標準
+
+
+def style_layout(name):
+    """風格 → 排布的代號"""
+    if name in STYLE_LAYOUT:
+        return STYLE_LAYOUT[name]
+    return GROUP_LAYOUT.get(next((g for g, grp in STYLE_GROUPS if any(x[0] == name for x in grp)), ""), "std")
 
 
 def spk_key():
@@ -1125,7 +1242,7 @@ def cleanup_reverb(cfg_dir, keep):
         old_spk = fn.startswith("spk_") and fn not in keep and not (spk and fn.startswith(f"spk_v1{spk[1]}_"))
         old_sep = fn.startswith("sep_") and fn.endswith(".dll") and fn not in keep  # 舊版外掛（還在用的刪不掉，下次再刪）
         old_xf = fn.startswith(("xfeed_v3", "sur_")) and fn not in keep  # 換頭型前的交叉饋送、環繞檔（要用時會再做）
-        old_xf = old_xf or (fn.startswith(("sepdir_", "v4refl_", "v4comp_")) and fn not in keep)  # 直接擺位的舊表、反射檔
+        old_xf = old_xf or (fn.startswith(("sepdir_", "v4refl_", "v4comp_", "v4mid_")) and fn not in keep)  # 直接擺位的舊表、反射檔
         if (fn.startswith("reverb_") and fn not in keep) or old_spk or old_sep or old_xf:
             try:
                 os.remove(os.path.join(cfg_dir, fn))
@@ -1204,11 +1321,11 @@ def steady_peak(filters, width=0):
     return max(curve(filters) or [0.0]) + 20 * math.log10(1 + 2 * width / 100)
 
 
-def true_peak(filters, width=0, crossfeed=0, room=0, recon=False, v4=False, skey="studio_spk"):
+def true_peak(filters, width=0, crossfeed=0, room=0, recon=False, v4=False, skey="studio_spk", focus=0.0, ear=0.0):
     """滿格母帶經過這組設定後的輸出峰值（dB，0＝跟輸入滿格一樣大）。
     recon＝電腦重建濾波開著：濾掉 20 kHz 以上後，削波母帶的波峰會冒出來（樣本之間的峰值）→ 用 4 倍超取樣算。
     v4＝直接擺位：用補償後的整組虛擬喇叭估（中間的聲音一樣大，兩邊的方向不同）"""
-    key = (tuple(filters), width, crossfeed, room, recon, v4, skey)
+    key = (tuple(filters), width, crossfeed, room, recon, v4, skey, focus, ear)
     if key in _PEAKS:
         return _PEAKS[key]
     try:
@@ -1224,7 +1341,8 @@ def true_peak(filters, width=0, crossfeed=0, room=0, recon=False, v4=False, skey
     if crossfeed == SPEAKER and v4:  # 左右相同／反相照外掛實際的輸出，左右不同的樂器用整組虛擬喇叭（見 v4_parts）
         parts = v4_parts(skey)
         if parts:
-            spk, spk_ind = (_resample(parts[3][0], 48000),), _resample(parts[3][1], 48000)
+            pk = v4_comp(parts, focus, ear)[1]
+            spk, spk_ind = (_resample(pk[0], 48000),), _resample(pk[1], 48000)
     n = len(sigs[0][0]) + (len(ir) if ir is not None else 0) + (len(spk[0]) if spk else 0) + 24000
     nfft = 1 << (n - 1).bit_length()
     f = np.fft.rfftfreq(nfft, 1 / 48000)
@@ -1241,8 +1359,9 @@ def true_peak(filters, width=0, crossfeed=0, room=0, recon=False, v4=False, skey
     peak = 0.0
     for s1, s2 in zip(*sigs):
         X1, X2 = np.fft.rfft(s1, nfft), np.fft.rfft(s2, nfft)
-        for case, (xl, xr) in enumerate(((X1, X1), (X1, -X1), (X1, X2))):  # 左右相同、左右反相、左右不同樂器
-            if spk:  # 虛擬喇叭（4 聲道）在寬度之前
+        # 左右相同、左右反相、左右不同樂器；貼耳：正中間的聲音另外原封不動出去（不過喇叭、不過補償）
+        for case, (xl, xr) in enumerate(((X1, X1), (X1, -X1), (X1, X2)) + (((X1, X1),) if spk and ear else ())):
+            if spk and case < 3:  # 虛擬喇叭（4 聲道）在寬度之前
                 sv = s3 if case == 2 else sp
                 xl, xr = sv[:, 0] * xl + sv[:, 3] * xr, sv[:, 1] * xr + sv[:, 2] * xl
             yl, yr = ll * xl + lr * xr, lr * xl + ll * xr
@@ -2957,13 +3076,16 @@ class App:
         self._perm_asked = False
         self.eq_problem = None  # 每 2 秒在 refresh_device 更新
         self._ir_jobs, self._ir_ready, self._clean_job = set(), False, None  # 背景做殘響檔
-        self.sep_level = tk.IntVar(value=int(s.get("sep", 0)))  # 分離度：關／輕／中／強（所有風格都套用）
+        self.sep_level = tk.IntVar(value=int(s.get("sep", 0)))  # 分離度：關／輕／中／強／超強（所有風格都套用）
         self.sur_level = tk.IntVar(value=int(s.get("sur", 0)))  # 環繞：關／輕／中／強
         self.smooth = tk.DoubleVar(value=int(s.get("smooth", 0)))  # 不刺耳：關／輕／中／強（所有風格都套用）
         # 聽喇叭模式：None＝關、其他＝SPK_PRESETS 的代號；選了射擊遊戲之前的 (分離度, 環繞)：有值＝現在是遊戲
-        self.spk_mode = s.get("spk_mode") if s.get("spk_mode") in SPK_PRESETS else None
+        self.spk_mode = s.get("spk_mode") if s.get("spk_mode") in SPK_PRESETS or s.get("spk_mode") == "" else None
         self._pre_game = tuple(s["pre_game"]) if isinstance(s.get("pre_game"), list) else None
         SPK_USE["room"] = s.get("spk_room") if s.get("spk_room") in dict(SPK_ROOMS) else "studio"
+        SPK_USE["voice"] = s.get("spk_voice") if s.get("spk_voice") in VOICE_MODES else "ear"
+        SPK_USE["layout"] = s.get("spk_layout") is not False
+        self.vox_level = tk.IntVar(value=min(max(int(s.get("vox", 0) or 0), 0), len(VOX_LEVELS) - 1))  # 人聲大小
         self._spk_pop, self._spk_pop_t = None, 0.0
         self._picked = None  # 最後按的風格（聽喇叭模式跟它融合）
         self._sep_name = None
@@ -3257,6 +3379,10 @@ class App:
         self.head_lbl.bind("<Button-1>", lambda _e: self.head_menu())
         self.paint_head()
         self.bal_lbl = self.slider_row(g, 2, "左右平衡", "補償左右耳", self.balance, -3, 3, 0.5, 180, num=False)
+        self.vox_lbl = g.grid_slaves(row=2, column=0)[0].winfo_children()[1]  # 小字加上「人聲」，點一下切換
+        self.vox_lbl.config(cursor="hand2")
+        self.vox_lbl.bind("<Button-1>", lambda _e: self.cycle_vox())
+        self.paint_vox()
         self.room_lbl = self.slider_row(g, 3, "殘響空間", "錄音室／音樂廳", self.room, 0, 3, 1, 180, num=False)
         self.room_lbl.config(width=10)
         self.spk_lbl = g.grid_slaves(row=3, column=0)[0].winfo_children()[1]  # 小字改成「喇叭」：聽喇叭模式
@@ -3998,6 +4124,10 @@ class App:
 
     def apply_style(self, idx):
         name, vals, width, cf, _src = STYLES[idx]
+        prev = self._picked if self._picked is not None and 0 <= self._picked < len(STYLES) else None
+        if (self.spk_mode is None and int(self.crossfeed.get()) == SPEAKER
+                and (prev is None or STYLES[prev][3] != SPEAKER)):
+            self.spk_mode = ""  # 喇叭是自己拉上去的（不是上一個風格帶的）：當成聽喇叭模式，換風格保留
         self._picked = idx
         if name in NO_SPATIAL:  # 遊戲：分離度、環繞會改變聲音的位置 → 先關掉，記住原本的，換別的風格再恢復
             if self._pre_game is None:
@@ -4147,17 +4277,26 @@ class App:
         sv, su = SEP_LEVELS[int(self.sep_level.get())][1], SUR_LEVELS[int(self.sur_level.get())][1]
         harsh = int(self.smooth.get()) if DYN_OK else 0  # 不刺耳（動態）
         game = DYN_OK and self._pre_game is not None     # 射擊遊戲：爆炸、槍聲壓下來，腳步拉上來
+        vg = VOX_LEVELS[int(self.vox_level.get())][1] if DYN_OK and not test else 1.0  # 人聲大小
+        vx = vg != 1.0
+        if vg < 0:
+            su = 0.0  # 只聽人聲：環繞的環境音不加回來
         sname = None
-        if on and not test and (sv or su or harsh or game):
+        if on and not test and (sv or su or harsh or game or vx):
             try:
                 sname = sep_file(self.cfg_dir)
             except OSError as e:
                 note = note or f"（分離度外掛複製失敗：{e}）"
         skey, snote = spk_key() if cf == SPEAKER else ("studio_spk", "")
+        lay = self.layout()  # 排布（跟著風格）：集中的量、人聲遠近、舞台寬度、貼耳
+        voice = SPK_USE.get("voice", "ear")
+        vfocus = lay[2] if voice != "natural" else 0.0
+        vnear, vwidth = (10 ** (lay[3] / 20) if vfocus else 1.0), lay[4]
+        vear = lay[6] if voice == "ear" else 0.0
         xfeed, recon, v4f = {}, {}, {}
         try:
             if cf == SPEAKER and sv and sname and DYN_OK:  # 虛擬喇叭＋分離度：直接擺位
-                v4f = v4_files(self.cfg_dir, skey)
+                v4f = v4_files(self.cfg_dir, skey, vfocus, vear)
             xfeed = {} if v4f else ((spk_files(self.cfg_dir, skey) if cf == SPEAKER else {})
                                     or (xfeed_files(self.cfg_dir, cf) if cf else {}))
             recon = recon_files(self.cfg_dir)
@@ -4175,15 +4314,19 @@ class App:
                 except Exception as e:  # 沒有 numpy 或寫不進去
                     note = note or f"（環繞做不出來：{e}）"
             if v4f:
-                v4 = v4_lines(self.cfg_dir, sname, sv, su if sfiles else 0.0, v4f)
+                v4 = v4_lines(self.cfg_dir, sname, sv, su if sfiles else 0.0, v4f, vfocus, vnear, vwidth, vear)
             elif sv or sfiles:
                 sep = sep_lines(self.cfg_dir, sname, sv, su if sfiles else 0.0)
+            if vx:  # 人聲大小：在最前面（分離度那一步）加減分出來的人聲
+                sep = vox_lines(self.cfg_dir, sname, vg, sep)
             if harsh or game:
                 dyn = dyn_lines(self.cfg_dir, sname, harsh, game)
         self._sep_name = sname if sep or v4 or dyn else None
         ear_f = self.lr_comp() if on else []  # 左右耳對齊：補的那一耳多大聲，防破音就多留多少
-        need = (true_peak(filters, width, cf, room if files else 0, hires, bool(v4), skey) + SAFETY
-                + (SEP_MARGIN if sep or v4 else 0) + (SUR_MARGIN if sfiles else 0)
+        need = (true_peak(filters, width, cf, room if files else 0, hires, bool(v4), skey,
+                          vfocus if v4 else 0.0, vear if v4 else 0.0) + SAFETY
+                + (SEP_MARGIN + (0.5 if sv > 1 else 0) if sep or v4 else 0) + (SUR_MARGIN if sfiles else 0)
+                + (VOX_MARGIN if vg > 1 else 0)
                 + max([abs(fl[2]) for fl in ear_f], default=0.0))
         if self.loud.get():
             hr, extra = max(0.0, math.ceil(need * 2) / 2), 0.0
@@ -4306,6 +4449,31 @@ class App:
         self.changed()
         lv = int(self.sur_level.get())
         self.toast(f"環繞：{SUR_LEVELS[lv][0]}" + ("（殘響、空間感這些環境音移到身邊兩側後方，樂器和人聲留在前面）" if lv else ""))
+
+    def paint_vox(self):
+        lv = int(self.vox_level.get())
+        self.vox_lbl.config(text=f"補償左右耳　人聲：{VOX_LEVELS[lv][0]} ▾", fg=ACCENT if lv else SUB)
+
+    def cycle_vox(self):
+        if not DYN_OK:
+            self.toast("人聲大小要用新版的分離度外掛（重新安裝）")
+            return
+        self.vox_level.set((int(self.vox_level.get()) + 1) % len(VOX_LEVELS))
+        self.paint_vox()
+        self.changed()
+        lv = int(self.vox_level.get())
+        self.toast("人聲：" + VOX_LEVELS[lv][0] + ("", "（正中間的人聲 +3 dB：看電影的對白、小聲聽歌比較清楚）",
+                                                  "（正中間的人聲 −6 dB）", "（伴唱：人聲跟樂器混在一起的地方會留一點）",
+                                                  "（聽寫歌詞、練唱：樂器會漏一點）")[lv])
+
+    def layout(self):
+        """現在的排布 (代號, 名稱, 集中, 近 dB, 寬, 說明, 貼耳)：跟著風格（最後按的那個風格），或固定標準"""
+        key = "std"
+        if SPK_USE.get("layout", True):
+            idx = self._picked if self._picked is not None and 0 <= self._picked < len(STYLES) else self.current_style()
+            if idx is not None and idx >= 0:
+                key = style_layout(STYLES[idx][0])
+        return (key,) + LAYOUTS[key]
 
     def cycle_sep(self):
         self.sep_level.set((int(self.sep_level.get()) + 1) % len(SEP_LEVELS))
@@ -4668,7 +4836,8 @@ class App:
         def show(key=None):  # 滑過哪個就顯示它的說明；平常顯示使用中的
             if key is None:
                 txt = (f"使用中：{SPK_PRESETS[self.spk_mode]['name']}・{dict(SPK_ROOMS)[SPK_USE['room']]}"
-                       if self.spk_mode else "聽喇叭模式關著")
+                       if self.spk_mode else f"使用中：自己設的・{dict(SPK_ROOMS)[SPK_USE['room']]}"
+                       if self.spk_mode == "" else "聽喇叭模式關著")
             else:
                 txt = SPK_PRESETS[key]["desc"] if key else "關掉聽喇叭模式：回到風格自己的空間設定"
             info.config(text=txt)
@@ -4691,6 +4860,45 @@ class App:
                 text=SPK_ROOM_NOTE[k] + ("" if os.path.exists(head_file(f"{k}_spk.npy")[0])
                                          else "（這個頭型還沒算，會先用錄音室）")), add="+")
             p.bind("<Leave>", lambda _e: show(), add="+")
+        voice_txt = {"ear": "貼耳：正中間的聲音（人聲）完全不經過虛擬喇叭、不進房間，直接給兩耳 → 跟關掉喇叭模式一樣貼耳、"
+                            "乾淨；樂器、背景照樣是喇叭和房間（大舞台、現場的風格會少一點）",
+                     "focus": "集中：人聲的房間反射全部留著，只是兩耳聽到的一樣 → 在前面的喇叭那裡、不會散開",
+                     "natural": "自然：人聲也跟樂器一樣，兩耳聽到不同的房間反射（真的喇叭就是這樣），比較開"}
+
+        def set_voice(v):
+            self.spk_menu_close()
+            SPK_USE["voice"] = v
+            self.changed()
+            self.toast("人聲：" + voice_txt[v].split("：", 1)[0] + "（分離度開著時才有作用）")
+
+        def set_layout(v):
+            self.spk_menu_close()
+            SPK_USE["layout"] = v
+            self.changed()
+            lay = self.layout()
+            self.toast(f"排布：跟風格（現在「{lay[1]}」：{lay[5]}）" if v else "排布：標準（照錄音原本的位置）")
+
+        def lay_txt(v):
+            if not v:
+                return "標準：每種風格都照錄音原本的位置"
+            i = self._picked if self._picked is not None and 0 <= self._picked < len(STYLES) else self.current_style()
+            lay = LAYOUTS[style_layout(STYLES[i][0]) if i is not None and i >= 0 else "std"]
+            return f"跟風格：換風格時樂器的擺法跟著換。這個風格是「{lay[0]}」：{lay[4]}"
+
+        for title, items, cur, fn, tip in (
+                ("人聲（分離度開著時才有作用）", (("貼耳", "ear"), ("集中", "focus"), ("自然", "natural")),
+                 SPK_USE.get("voice", "ear"), set_voice, lambda v: voice_txt[v]),
+                (f"排布（分離度開著時才有作用；現在「{self.layout()[1]}」）", (("跟風格", True), ("標準", False)),
+                 SPK_USE.get("layout", True), set_layout, lay_txt)):
+            self.label(inner, title, 9, SUB).pack(anchor="w", pady=(px(8), 0))
+            vg = tk.Frame(inner, bg=PANEL)
+            vg.pack(anchor="w", pady=(px(4), 0))
+            for i, (label, v) in enumerate(items):
+                p = Pill(vg, self, label, lambda v=v, fn=fn: fn(v), size=10)
+                p.set_selected(v == cur)
+                p.grid(row=0, column=i, padx=(0, px(4)), pady=(0, px(4)), sticky="we")
+                p.bind("<Enter>", lambda _e, v=v, tip=tip: info.config(text=tip(v)), add="+")
+                p.bind("<Leave>", lambda _e: show(), add="+")
         info.pack(anchor="w", pady=(px(2), 0))
         show()
         pop.update_idletasks()
@@ -5588,6 +5796,7 @@ class App:
                 "sep": int(self.sep_level.get()), "sur": int(self.sur_level.get()), "hf": self.hf_all, "lr": self.lr_all,
                 "head": current_head(),
                 "smooth": int(self.smooth.get()), "spk_mode": self.spk_mode, "spk_room": SPK_USE["room"],
+                "spk_voice": SPK_USE["voice"], "spk_layout": SPK_USE["layout"], "vox": int(self.vox_level.get()),
                 "pre_game": list(self._pre_game) if self._pre_game else None,
                 "pref": {**self.pref_data, "on": self.pref_on.get()} if self.pref_data else {}, "tray_tip": self.tray_tip}
         try:
