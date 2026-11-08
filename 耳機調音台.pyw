@@ -1049,7 +1049,7 @@ SPK_ROOMS = [("studio", "錄音室"), ("small", "小房間")]
 SPK_ROOM_NOTE = {"studio": "ITU-R BS.1116 標準聆聽室（7×5 m），喇叭在 2.4 m 外：開闊、殘響均勻",
                  "small": "約 3×3.5 m、天花板 2 m 的小房間（有家具，殘響約 0.2 秒、比較乾），喇叭放在書桌上 0.8 m 外、"
                           "稍微抬高對著耳朵：像坐在書桌前聽一對近場喇叭，聲音比較近、比較結實"}
-SPK_USE = {"room": "studio", "voice": "ear", "layout": True}
+SPK_USE = {"room": "studio", "voice": "ear", "layout": "auto"}
 # 人聲（「喇叭 ▾」選單，分離度開著＝直接擺位時）：ear＝貼耳（正中間的聲音直接給兩耳，不經過虛擬喇叭、不進房間，
 # 跟關掉喇叭模式一樣；樂器、背景照樣是喇叭和房間）、focus＝集中（房間反射兩耳一樣，不會散開）、natural＝自然
 VOICE_MODES = ("ear", "focus", "natural")
@@ -1066,12 +1066,23 @@ LAYOUTS = {
     "stage": ("大舞台", 0.0, 0, 1.35, "樂團展開到 ±40°，像坐在音樂廳；獨唱、獨奏也在廳裡（不貼耳、不集中）", 0.0),
     "speech": ("說話", 1.0, -6, 0.85, "聲音貼近、乾淨，舞台窄一點：專心聽說話", 1.0),
     "live": ("現場", 1.0, 0, 1.20, "主唱集中，但保留一點跟舞台的距離；舞台展開一點", 0.5),
+    "front": ("第一排", 1.0, -1, 1.35, "坐在舞台正前方：舞台很寬、主唱很近", 0.6),
+    "back": ("後排", 0.3, 0, 0.80, "坐在後面：舞台窄一點，人聲、樂器都帶著房間聲（不貼耳）", 0.0),
+    "sing": ("伴唱", 1.0, -6, 1.20, "人聲貼耳、樂團往兩邊拉開：跟著唱、練唱（人聲選「去人聲」就是伴唱帶）", 1.0),
+    "cinema": ("電影", 1.0, -4, 1.30, "對白集中在正中間、清楚；配樂、音效鋪寬", 0.8),
+    "close": ("近距離", 1.0, -5, 0.90, "小聲聽、深夜：聲音近、乾、不擴散", 1.0),
+    "club": ("夜店", 1.0, -2, 1.45, "大鼓、貝斯、主唱在正中間，合成器鋪到最寬（±43°）", 1.0),
 }
 STYLE_LAYOUT = {"超級低音衝擊": "wide", "蒸汽波／City Pop": "vocal", "R&B": "vocal", "嘻哈": "beat", "爵士經典": "small",
                 "電影／遊戲配樂": "stage", "爵士": "small", "古典": "stage", "人聲／Podcast": "speech", "女毒": "vocal",
                 "60 年代搖滾": "std", "現場搖滾": "live", "驚艷試聽": "wide", "音樂廳前排": "stage", "音樂廳中段": "stage",
                 "寬廣舞台": "wide", "分離度拉滿": "wide", "HD 800 S 大空間": "wide"}
 GROUP_LAYOUT = {"搖滾": "band"}  # 沒列在上面的：整組一樣，其他＝標準
+
+
+def layout_pick(sel):
+    """設定裡的排布：True／"auto"＝跟風格、False＝標準（舊版存的）、其他＝自己挑的那個"""
+    return "auto" if sel in (True, "auto", None) else "std" if sel is False else sel if sel in LAYOUTS else "auto"
 
 
 def style_layout(name):
@@ -3114,7 +3125,7 @@ class App:
         self._pre_game = tuple(s["pre_game"]) if isinstance(s.get("pre_game"), list) else None
         SPK_USE["room"] = s.get("spk_room") if s.get("spk_room") in dict(SPK_ROOMS) else "studio"
         SPK_USE["voice"] = s.get("spk_voice") if s.get("spk_voice") in VOICE_MODES else "ear"
-        SPK_USE["layout"] = s.get("spk_layout") is not False
+        SPK_USE["layout"] = layout_pick(s.get("spk_layout"))
         self.vox_level = tk.IntVar(value=min(max(int(s.get("vox", 0) or 0), 0), len(VOX_LEVELS) - 1))  # 人聲大小
         self._spk_pop, self._spk_pop_t = None, 0.0
         self._picked = None  # 最後按的風格（聽喇叭模式跟它融合）
@@ -4356,6 +4367,8 @@ class App:
         except Exception as e:  # 沒有 numpy 或寫不進去：交叉饋送用舊版、不做重建濾波
             note = note or f"（高解析處理做不出來：{e}）"
         note = note or snote
+        if game:
+            note = note or "（射擊遊戲：小聲的聲音會被拉大，聽音樂時殘響、回音會變明顯——聽歌請換別的風格）"
         self._hires = hires = bool(recon) and self.recon_on()
         # 用滿格母帶實際算這組設定的輸出峰值。固定預留：超過就整體多降。音量優先：只預留目前設定需要的。
         # 兩種都一樣：EQ 關掉時用同一個音量，A/B 比較才公平
@@ -4515,9 +4528,10 @@ class App:
                    + ("", "（+3 dB：看電影的對白、小聲聽歌比較清楚）", "（−6 dB）", "（伴唱）", "（聽寫歌詞、練唱）")[lv])
 
     def layout(self):
-        """現在的排布 (代號, 名稱, 集中, 近 dB, 寬, 說明, 貼耳)：跟著風格（最後按的那個風格），或固定標準"""
-        key = "std"
-        if SPK_USE.get("layout", True):
+        """現在的排布 (代號, 名稱, 集中, 近 dB, 寬, 說明, 貼耳)：跟著風格（最後按的那個風格），或自己挑的那個"""
+        sel = layout_pick(SPK_USE.get("layout"))
+        key = sel if sel != "auto" else "std"
+        if sel == "auto":
             idx = self._picked if self._picked is not None and 0 <= self._picked < len(STYLES) else self.current_style()
             if idx is not None and idx >= 0:
                 key = style_layout(STYLES[idx][0])
@@ -4926,11 +4940,11 @@ class App:
             SPK_USE["layout"] = v
             self.changed()
             lay = self.layout()
-            self.toast(f"排布：跟風格（現在「{lay[1]}」：{lay[5]}）" if v else "排布：標準（照錄音原本的位置）")
+            self.toast(f"排布：跟風格（現在「{lay[1]}」：{lay[5]}）" if v == "auto" else f"排布：{lay[1]}（{lay[5]}）", 3000)
 
         def lay_txt(v):
-            if not v:
-                return "標準：每種風格都照錄音原本的位置"
+            if v != "auto":
+                return f"{LAYOUTS[v][0]}：{LAYOUTS[v][4]}（每種風格都用這個）"
             i = self._picked if self._picked is not None and 0 <= self._picked < len(STYLES) else self.current_style()
             lay = LAYOUTS[style_layout(STYLES[i][0]) if i is not None and i >= 0 else "std"]
             return f"跟風格：換風格時樂器的擺法跟著換。這個風格是「{lay[0]}」：{lay[4]}"
@@ -4938,15 +4952,16 @@ class App:
         for title, items, cur, fn, tip in (
                 ("人聲（分離度開著時才有作用）", (("貼耳", "ear"), ("集中", "focus"), ("自然", "natural")),
                  SPK_USE.get("voice", "ear"), set_voice, lambda v: voice_txt[v]),
-                (f"排布（分離度開著時才有作用；現在「{self.layout()[1]}」）", (("跟風格", True), ("標準", False)),
-                 SPK_USE.get("layout", True), set_layout, lay_txt)):
+                (f"排布（分離度開著時才有作用；現在「{self.layout()[1]}」）",
+                 (("跟風格", "auto"),) + tuple((val[0], k) for k, val in LAYOUTS.items()),
+                 layout_pick(SPK_USE.get("layout")), set_layout, lay_txt)):
             self.label(inner, title, 9, SUB).pack(anchor="w", pady=(px(8), 0))
             vg = tk.Frame(inner, bg=PANEL)
             vg.pack(anchor="w", pady=(px(4), 0))
             for i, (label, v) in enumerate(items):
                 p = Pill(vg, self, label, lambda v=v, fn=fn: fn(v), size=10)
                 p.set_selected(v == cur)
-                p.grid(row=0, column=i, padx=(0, px(4)), pady=(0, px(4)), sticky="we")
+                p.grid(row=i // 5, column=i % 5, padx=(0, px(4)), pady=(0, px(4)), sticky="we")
                 p.bind("<Enter>", lambda _e, v=v, tip=tip: info.config(text=tip(v)), add="+")
                 p.bind("<Leave>", lambda _e: show(), add="+")
         info.pack(anchor="w", pady=(px(2), 0))
